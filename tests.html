@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WheelOfTest — domain tests</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px 16px; background: #090B0F; color: #F4F1E9; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    main { max-width: 860px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    #summary { font-weight: 600; margin: 0 0 16px; }
+    .pass { color: #70B99C; } .fail { color: #E07878; }
+    ol { padding-left: 0; list-style: none; margin: 0; }
+    li { padding: 6px 0; border-bottom: 1px solid #2A3440; overflow-wrap: anywhere; }
+    li .detail { display: block; color: #E07878; font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>WheelOfTest — domain.js tests</h1>
+  <p id="summary" role="status">Running…</p>
+  <ol id="results"></ol>
+</main>
+
+<script type="module">
+import {
+  validateProfile, normalizeRoomCode, canReceiveTask, assignTasks,
+  seededRandom, shuffle, spinRule, UNASSIGNED_NO_PHONE, ROOM_CODE_ALPHABET
+} from "./domain.js";
+import { TASKS } from "./tasks.js";
+
+// ---------------------------------------------------------------- tiny runner
+const results = [];
+function test(name, fn) {
+  try { fn(); results.push({ name, ok: true }); }
+  catch (error) { results.push({ name, ok: false, error: error && error.message ? error.message : String(error) }); }
+}
+function assert(condition, message) { if (!condition) throw new Error(message || "assertion failed"); }
+function equal(actual, expected, message) {
+  const a = JSON.stringify(actual), e = JSON.stringify(expected);
+  if (a !== e) throw new Error(`${message || "not equal"}\n  expected: ${e}\n  actual:   ${a}`);
+}
+
+// ---------------------------------------------------------------- fixtures
+let nextId = 0;
+function person(name, team, { android = false, ios = false, online = true } = {}) {
+  nextId += 1;
+  return { user_id: `u-${String(nextId).padStart(3, "0")}-${name}`, name, team, android, ios, online };
+}
+const MOBILE = TASKS.filter((t) => t.platform === "mobile");
+const DESKTOP = TASKS.filter((t) => t.platform === "desktop");
+const byId = (list) => new Map(list.map((x) => [x.user_id, x]));
+function assignedTo(result, userId) { return result.assignments.filter((a) => a.participant_id === userId); }
+function loads(result, people) {
+  const m = new Map(people.map((p) => [p.user_id, 0]));
+  for (const a of result.assignments) if (a.participant_id) m.set(a.participant_id, m.get(a.participant_id) + 1);
+  return m;
+}
+function deepFreeze(value) {
+  if (value && typeof value === "object") { Object.values(value).forEach(deepFreeze); Object.freeze(value); }
+  return value;
+}
+function randomRoster(random) {
+  const teams = ["AF", "CYD", "PB"];
+  const size = 1 + Math.floor(random() * 9);
+  const roster = [];
+  for (let i = 0; i < size; i += 1) {
+    const device = Math.floor(random() * 4); // 0 none, 1 android, 2 ios, 3 both
+    roster.push(person(`p${i}`, teams[Math.floor(random() * 3)], {
+      android: device === 1 || device === 3,
+      ios: device === 2 || device === 3,
+      online: random() < 0.8
+    }));
+  }
+  return roster;
+}
+
+// ---------------------------------------------------------------- task data
+test("tasks.js has the 22 tasks with unique ids and valid values", () => {
+  equal(TASKS.length, 22, "task count");
+  equal(new Set(TASKS.map((t) => t.id)).size, 22, "unique ids");
+  for (const t of TASKS) {
+    assert(["desktop", "mobile"].includes(t.platform), `platform of ${t.id}`);
+    assert(t.team === null || ["AF", "CYD", "PB"].includes(t.team), `team of ${t.id}`);
+  }
+  equal(TASKS.filter((t) => t.what === "CD Release").every((t) => t.team === "CYD"), true, "CD Release belongs to CYD");
+  equal(MOBILE.length, 8, "mobile task count");
+});
+
+// ---------------------------------------------------------------- compatibility
+test("canReceiveTask: no phone → desktop yes, mobile no", () => {
+  const p = person("Desk", "AF");
+  assert(DESKTOP.every((t) => canReceiveTask(t, p)), "desktop");
+  assert(MOBILE.every((t) => !canReceiveTask(t, p)), "mobile");
+});
+
+test("a participant with no phone receives desktop tasks and never mobile tasks", () => {
+  for (let seed = 1; seed <= 50; seed += 1) {
+    const noPhone = person("NoPhone", "AF");
+    const phone = person("Phone", "PB", { android: true });
+    const r = assignTasks(TASKS, [noPhone, phone], seededRandom(seed));
+    assert(r.ok, "spin ok");
+    const mine = assignedTo(r, noPhone.user_id);
+    assert(mine.length > 0, "gets some tasks");
+    assert(mine.every((a) => a.task.platform === "desktop"), `seed ${seed}: no-phone got a mobile task`);
+  }
+  // Alone without a phone: every desktop task, zero mobile tasks.
+  const alone = person("Alone", "CYD");
+  const r = assignTasks(TASKS, [alone], seededRandom(7));
+  equal(assignedTo(r, alone.user_id).length, DESKTOP.length, "all desktop tasks");
+  assert(assignedTo(r, alone.user_id).every((a) => a.task.platform === "desktop"), "desktop only");
+});
+
+test("Android-only, iOS-only and both-device participants can all receive mobile tasks", () => {
+  for (const devices of [{ android: true }, { ios: true }, { android: true, ios: true }]) {
+    const p = person("Mobile", "AF", devices);
+    assert(MOBILE.every((t) => canReceiveTask(t, p)), `canReceiveTask ${JSON.stringify(devices)}`);
+    const r = assignTasks(TASKS, [p], seededRandom(3));
+    equal(assignedTo(r, p.user_id).filter((a) => a.task.platform === "mobile").length, MOBILE.length, `all mobile for ${JSON.stringify(devices)}`);
+    equal(r.assignments.filter((a) => a.participant_id === null).length, 0, "nothing unassigned");
+  }
+});
+
+// ---------------------------------------------------------------- online
+test("offline participants receive nothing", () => {
+  const on = person("On", "AF", { ios: true });
+  const off1 = person("Off1", "AF", { android: true, online: false });
+  const off2 = person("Off2", "PB", { android: true, ios: true, online: false });
+  const r = assignTasks(TASKS, [on, off1, off2], seededRandom(11));
+  equal(assignedTo(r, off1.user_id).length, 0, "off1");
+  equal(assignedTo(r, off2.user_id).length, 0, "off2");
+  equal(assignedTo(r, on.user_id).length, 22, "online person gets everything");
+});
+
+test("participants without online === true are treated as offline", () => {
+  const p = person("Maybe", "AF", { android: true });
+  delete p.online;
+  const r = assignTasks(TASKS, [p], seededRandom(1));
+  equal(r.ok, false, "no explicit online flag means offline");
+});
+
+test("zero online participants returns an error and no assignments", () => {
+  const r1 = assignTasks(TASKS, [], seededRandom(1));
+  equal(r1.ok, false, "empty roster");
+  assert(typeof r1.error === "string" && r1.error.length > 0, "error message");
+  equal(r1.assignments.length, 0, "no assignments");
+  const r2 = assignTasks(TASKS, [person("Off", "AF", { online: false, android: true })], seededRandom(1));
+  equal(r2.ok, false, "only offline people");
+});
+
+// ---------------------------------------------------------------- team preference
+test("each team task goes to its own team when a compatible member is online", () => {
+  for (let seed = 1; seed <= 50; seed += 1) {
+    const roster = [
+      person("A1", "AF", { android: true }), person("A2", "AF"),
+      person("C1", "CYD", { ios: true }),
+      person("P1", "PB", { android: true, ios: true }), person("P2", "PB")
+    ];
+    const people = byId(roster);
+    const r = assignTasks(TASKS, roster, seededRandom(seed));
+    for (const a of r.assignments.filter((x) => x.task.team)) {
+      equal(people.get(a.participant_id).team, a.task.team, `seed ${seed}: ${a.task_id}`);
+      equal(a.team_match, true, `team_match for ${a.task_id}`);
+    }
+  }
+});
+
+test("a team task goes cross-team only when no compatible member of that team is online", () => {
+  for (let seed = 1; seed <= 50; seed += 1) {
+    const afDesk = person("AFdesk", "AF");                       // AF, no phone
+    const afPhoneOff = person("AFoff", "AF", { android: true, online: false });
+    const pb = person("PB", "PB", { ios: true });
+    // nobody from CYD online at all
+    const roster = [afDesk, afPhoneOff, pb];
+    const people = byId(roster);
+    const r = assignTasks(TASKS, roster, seededRandom(seed));
+    for (const a of r.assignments) {
+      if (a.task.team === "AF" && a.task.platform === "desktop") {
+        equal(a.participant_id, afDesk.user_id, `AF desktop stays in AF (${a.task_id})`);
+        equal(a.team_match, true, "match");
+      }
+      if (a.task.team === "AF" && a.task.platform === "mobile") {
+        equal(a.participant_id, pb.user_id, `AF mobile crosses to the only phone owner (${a.task_id})`);
+        equal(a.team_match, false, "cross-team flagged");
+      }
+      if (a.task.team === "CYD") {
+        assert(a.participant_id !== null, "CYD task assigned");
+        equal(a.team_match, false, "CYD tasks are cross-team");
+      }
+      if (a.task.team === "PB") equal(people.get(a.participant_id).team, "PB", "PB stays in PB");
+    }
+  }
+});
+
+test("team preference never overrides the phone rule", () => {
+  for (let seed = 1; seed <= 50; seed += 1) {
+    const af = person("AFnoPhone", "AF");
+    const cyd = person("CYDphone", "CYD", { android: true });
+    const r = assignTasks(TASKS, [af, cyd], seededRandom(seed));
+    for (const a of r.assignments.filter((x) => x.task.team === "AF" && x.task.platform === "mobile")) {
+      equal(a.participant_id, cyd.user_id, `seed ${seed}: ${a.task_id} must go to a phone owner`);
+    }
+    assert(assignedTo(r, af.user_id).every((a) => a.task.platform === "desktop"), "AF member got a mobile task");
+  }
+});
+
+test("neutral tasks record team_match as null", () => {
+  const r = assignTasks(TASKS, [person("X", "AF", { ios: true })], seededRandom(5));
+  for (const a of r.assignments.filter((x) => x.task.team === null)) equal(a.team_match, null, a.task_id);
+});
+
+// ---------------------------------------------------------------- unassigned
+test("a mobile task with no phone owner online is Unassigned and the spin still succeeds", () => {
+  const desk1 = person("D1", "AF"), desk2 = person("D2", "PB");
+  const phoneOffline = person("Off", "CYD", { android: true, online: false });
+  const r = assignTasks(TASKS, [desk1, desk2, phoneOffline], seededRandom(9));
+  equal(r.ok, true, "spin succeeds");
+  const unassigned = r.assignments.filter((a) => a.participant_id === null);
+  equal(unassigned.length, MOBILE.length, "every mobile task unassigned");
+  assert(unassigned.every((a) => a.task.platform === "mobile"), "only mobile tasks are unassigned");
+  assert(unassigned.every((a) => a.reason === UNASSIGNED_NO_PHONE && a.participant === null && a.team_match === null), "reason and empty fields");
+  assert(r.assignments.filter((a) => a.task.platform === "desktop").every((a) => a.participant_id !== null), "desktop all assigned");
+});
+
+// ---------------------------------------------------------------- completeness
+test("every task appears exactly once in the result, in task order", () => {
+  for (let seed = 1; seed <= 100; seed += 1) {
+    const random = seededRandom(seed);
+    const roster = randomRoster(random);
+    if (!roster.some((p) => p.online)) roster[0].online = true;
+    const r = assignTasks(TASKS, roster, random);
+    equal(r.assignments.length, TASKS.length, "length");
+    equal(r.assignments.map((a) => a.task_id), TASKS.map((t) => t.id), `seed ${seed}: order/ids`);
+  }
+});
+
+// ---------------------------------------------------------------- load balancing
+test("load within a pool differs by at most one (everyone shares one pool)", () => {
+  for (let seed = 1; seed <= 100; seed += 1) {
+    const roster = [1, 2, 3, 4].map((i) => person(`S${i}`, "AF", { android: true }));
+    const counts = [...loads(assignTasks(TASKS, roster, seededRandom(seed)), roster).values()];
+    assert(Math.max(...counts) - Math.min(...counts) <= 1, `seed ${seed}: ${counts}`);
+    equal(counts.reduce((s, n) => s + n, 0), 22, "total");
+  }
+});
+
+test("people with identical team and devices always end within one task of each other", () => {
+  // Same team + same phone capability ⇒ they are in exactly the same pools.
+  for (let seed = 1; seed <= 300; seed += 1) {
+    const random = seededRandom(seed * 7919);
+    const roster = randomRoster(random);
+    if (!roster.some((p) => p.online)) roster[0].online = true;
+    const r = assignTasks(TASKS, roster, random);
+    const count = loads(r, roster);
+    const groups = new Map();
+    for (const p of roster.filter((x) => x.online)) {
+      const key = `${p.team}|${Boolean(p.android || p.ios)}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(count.get(p.user_id));
+    }
+    for (const [key, values] of groups) {
+      assert(Math.max(...values) - Math.min(...values) <= 1, `seed ${seed}, group ${key}: ${values}`);
+    }
+  }
+});
+
+test("documented caveat: a team with one member online receives all of that team's tasks", () => {
+  const soloAF = person("SoloAF", "AF", { android: true });
+  const pbs = [1, 2, 3].map((i) => person(`PB${i}`, "PB", { ios: true }));
+  const r = assignTasks(TASKS, [soloAF, ...pbs], seededRandom(21));
+  const afTasks = r.assignments.filter((a) => a.task.team === "AF");
+  assert(afTasks.length === 6 && afTasks.every((a) => a.participant_id === soloAF.user_id), "all AF tasks to the solo member");
+});
+
+// ---------------------------------------------------------------- determinism
+test("the same seeded random source gives the same result", () => {
+  const roster = [
+    person("A", "AF", { android: true }), person("B", "AF"), person("C", "CYD", { ios: true }),
+    person("D", "PB"), person("E", "PB", { android: true, ios: true })
+  ];
+  const r1 = assignTasks(TASKS, roster, seededRandom(1234));
+  const r2 = assignTasks(TASKS, roster, seededRandom(1234));
+  equal(r1, r2, "identical output");
+  const differs = [1, 2, 3, 4, 5].some((s) => JSON.stringify(assignTasks(TASKS, roster, seededRandom(s))) !== JSON.stringify(r1));
+  assert(differs, "different seeds should be able to produce different results");
+});
+
+test("assignTasks does not mutate its inputs", () => {
+  const tasks = deepFreeze(JSON.parse(JSON.stringify(TASKS)));
+  const roster = deepFreeze([person("A", "AF", { android: true }), person("B", "PB")]);
+  const r = assignTasks(tasks, roster, seededRandom(2)); // throws in strict mode if it mutates
+  equal(r.ok, true, "ok");
+});
+
+test("shuffle is a permutation and is deterministic for a seed", () => {
+  const items = Array.from({ length: 30 }, (_, i) => i);
+  const a = shuffle(items, seededRandom(99));
+  equal([...a].sort((x, y) => x - y), items, "permutation");
+  equal(shuffle(items, seededRandom(99)), a, "deterministic");
+  equal(items, Array.from({ length: 30 }, (_, i) => i), "input untouched");
+});
+
+test("random sources returning edge values (0, 0.9999999, 1) never break assignment", () => {
+  const roster = [person("A", "AF", { android: true }), person("B", "AF", { ios: true })];
+  for (const value of [0, 0.9999999, 1]) {
+    const r = assignTasks(TASKS, roster, () => value);
+    equal(r.assignments.filter((a) => a.participant_id).length, 22, `random() = ${value}`);
+  }
+});
+
+// ---------------------------------------------------------------- property check
+test("property check over 500 random rosters: phone rule, team rule, offline rule", () => {
+  for (let seed = 1; seed <= 500; seed += 1) {
+    const random = seededRandom(seed);
+    const roster = randomRoster(random);
+    const r = assignTasks(TASKS, roster, random);
+    const online = roster.filter((p) => p.online);
+    if (online.length === 0) { equal(r.ok, false, `seed ${seed} empty`); continue; }
+    const people = byId(roster);
+    for (const a of r.assignments) {
+      const compatible = online.filter((p) => canReceiveTask(a.task, p));
+      if (a.participant_id === null) {
+        equal(compatible.length, 0, `seed ${seed}: ${a.task_id} unassigned while someone could take it`);
+        continue;
+      }
+      const p = people.get(a.participant_id);
+      assert(p.online, `seed ${seed}: offline person assigned`);
+      assert(canReceiveTask(a.task, p), `seed ${seed}: phone rule broken on ${a.task_id}`);
+      if (a.task.team) {
+        const ownTeamAvailable = compatible.some((c) => c.team === a.task.team);
+        equal(p.team === a.task.team, ownTeamAvailable, `seed ${seed}: team rule on ${a.task_id}`);
+        equal(a.team_match, p.team === a.task.team, "team_match value");
+      }
+      equal(a.participant.name, p.name, "participant snapshot");
+    }
+  }
+});
+
+// ---------------------------------------------------------------- profile validation
+test("profile validation: name is required, trimmed and 1–40 characters", () => {
+  const base = { team: "AF", android: false, ios: false };
+  equal(validateProfile({ ...base, name: "" }).ok, false, "empty");
+  equal(validateProfile({ ...base, name: "    " }).ok, false, "whitespace only");
+  equal(validateProfile({ ...base, name: undefined }).ok, false, "missing");
+  equal(validateProfile({ ...base, name: "  Ada  " }).value.name, "Ada", "trimmed");
+  equal(validateProfile({ ...base, name: "a" }).ok, true, "1 char");
+  equal(validateProfile({ ...base, name: "x".repeat(40) }).ok, true, "40 chars");
+  equal(validateProfile({ ...base, name: "x".repeat(41) }).ok, false, "41 chars");
+  equal(validateProfile({ ...base, name: "  " + "x".repeat(40) + "  " }).ok, true, "40 chars after trimming");
+  equal(validateProfile({ ...base, name: "😀".repeat(40) }).ok, true, "40 emoji count as 40 characters");
+  equal(validateProfile({ ...base, name: "😀".repeat(41) }).ok, false, "41 emoji");
+  equal(validateProfile({ ...base, name: "Ada\u0007" }).ok, false, "control character");
+});
+
+test("profile validation: team must be exactly AF, CYD or PB", () => {
+  for (const team of ["AF", "CYD", "PB"]) equal(validateProfile({ name: "Ada", team }).ok, true, team);
+  for (const team of ["af", "CD", "XX", "", null, undefined, 1]) {
+    const r = validateProfile({ name: "Ada", team });
+    equal(r.ok, false, `team ${JSON.stringify(team)}`);
+    assert(r.errors.team, "team error message");
+  }
+});
+
+test("profile validation: devices are strict booleans, neither is valid", () => {
+  equal(validateProfile({ name: "Ada", team: "PB" }).value, { name: "Ada", team: "PB", android: false, ios: false }, "neither");
+  equal(validateProfile({ name: "Ada", team: "PB", android: true, ios: true }).value, { name: "Ada", team: "PB", android: true, ios: true }, "both");
+  equal(validateProfile({ name: "Ada", team: "PB", android: "yes", ios: 1 }).value, { name: "Ada", team: "PB", android: false, ios: false }, "non-booleans ignored");
+});
+
+// ---------------------------------------------------------------- room code
+test("room codes are normalized and lookalike characters are rejected", () => {
+  equal(normalizeRoomCode(" abc234 "), "ABC234", "trim + uppercase");
+  for (const bad of ["ABC23", "ABC2345", "ABCD0O", "ABCD1I", "ABCDEL", "ABC-23", "", null, 123456]) {
+    equal(normalizeRoomCode(bad), null, `rejects ${JSON.stringify(bad)}`);
+  }
+  for (const ch of "0O1IL") assert(!ROOM_CODE_ALPHABET.includes(ch), `alphabet excludes ${ch}`);
+});
+
+// ---------------------------------------------------------------- spin rules
+test("spinRule: first spin, second spin gate at the threshold, then final", () => {
+  equal(spinRule({ status: "lobby", spins_used: 0 }, 0, 2), { spinNumber: 1, allowed: true, reason: null }, "lobby");
+  equal(spinRule({ status: "spun", spins_used: 1 }, 0, 2).allowed, false, "0 complaints");
+  equal(spinRule({ status: "spun", spins_used: 1 }, 1, 2).allowed, false, "1 complaint");
+  equal(spinRule({ status: "spun", spins_used: 1 }, 2, 2), { spinNumber: 2, allowed: true, reason: null }, "2 complaints");
+  equal(spinRule({ status: "spun", spins_used: 1 }, 3, 2).allowed, true, "3 complaints");
+  equal(spinRule({ status: "final", spins_used: 2 }, 5, 2).allowed, false, "final");
+});
+
+// ---------------------------------------------------------------- report
+const passed = results.filter((r) => r.ok).length;
+const failed = results.length - passed;
+const summary = document.getElementById("summary");
+summary.textContent = `${passed} passed, ${failed} failed (${results.length} tests)`;
+summary.className = failed ? "fail" : "pass";
+const list = document.getElementById("results");
+for (const r of results) {
+  const li = document.createElement("li");
+  const mark = document.createElement("span");
+  mark.className = r.ok ? "pass" : "fail";
+  mark.textContent = r.ok ? "✓ PASS " : "✗ FAIL ";
+  li.append(mark, document.createTextNode(r.name));
+  if (!r.ok) {
+    const detail = document.createElement("span");
+    detail.className = "detail";
+    detail.textContent = r.error;
+    li.append(detail);
+  }
+  list.append(li);
+}
+document.title = `${failed ? "FAIL" : "PASS"} ${passed}/${results.length} — WheelOfTest tests`;
+window.__TEST_RESULTS__ = { passed, failed, results };
+</script>
+</body>
+</html>

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#F5F5F7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+  <meta name="description" content="WheelOfTest: join a room, spin once, and every QA task gets an owner.">
+  <title>WheelOfTest</title>
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+  <!-- supabase-js, exact version pinned (self-contained UMD build, exposes window.supabase) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="navbar">
+    <div class="navbar-inner">
+      <a class="brand" href="./">
+        <span class="app-icon app-icon-small" aria-hidden="true"></span>
+        <span>WheelOfTest</span>
+      </a>
+      <div id="room-meta" class="room-meta" hidden>
+        <span class="room-code"><span class="room-code-label">Room</span> <span id="room-code"></span></span>
+        <button type="button" id="copy-link" class="btn btn-plain btn-small">Copy invite link</button>
+        <span id="connection" class="conn" data-state="connecting" role="status">
+          <span class="conn-dot" aria-hidden="true"></span>
+          <span id="connection-text">Connecting…</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- Messages: setup, loading, not found, errors -->
+    <section id="view-message" class="view view-message" hidden>
+      <span class="app-icon app-icon-large" aria-hidden="true"></span>
+      <h1 id="message-title" class="title-1" tabindex="-1"></h1>
+      <p id="message-body"></p>
+      <p><a id="message-link" class="btn btn-tinted" href="./" hidden></a></p>
+    </section>
+
+    <!-- Landing (create) and join form -->
+    <section id="view-form" class="view view-form" hidden>
+      <div class="intro">
+        <span class="app-icon app-icon-large" aria-hidden="true"></span>
+        <h1 id="form-title" class="large-title" tabindex="-1">WheelOfTest</h1>
+        <p id="form-lede">Join a room, spin once, and every QA task gets an owner.</p>
+      </div>
+
+      <form id="profile-form" class="form" novalidate>
+        <div class="field">
+          <div class="text-field">
+            <input id="name" name="name" type="text" placeholder=" " autocomplete="nickname" maxlength="40" required aria-describedby="name-error">
+            <label for="name">Your name</label>
+          </div>
+          <p id="name-error" class="field-error" hidden></p>
+        </div>
+
+        <fieldset class="field" aria-describedby="team-error">
+          <legend>Team</legend>
+          <div class="segmented">
+            <span class="segmented-thumb" aria-hidden="true"></span>
+            <label class="segment"><input type="radio" name="team" value="AF"><span>AF</span></label>
+            <label class="segment"><input type="radio" name="team" value="CYD"><span>CYD</span></label>
+            <label class="segment"><input type="radio" name="team" value="PB"><span>PB</span></label>
+          </div>
+          <p id="team-error" class="field-error" hidden></p>
+        </fieldset>
+
+        <fieldset class="field" aria-describedby="devices-hint">
+          <legend>Phones you can test on</legend>
+          <div class="group">
+            <label class="group-row switch-row">
+              <span>Android</span>
+              <input type="checkbox" name="android" role="switch">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="group-row switch-row">
+              <span>iOS</span>
+              <input type="checkbox" name="ios" role="switch">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+          </div>
+          <p id="devices-hint" class="footnote">Leave both off if you only test on desktop.</p>
+        </fieldset>
+
+        <p id="form-error" class="notice notice-error" role="alert" hidden></p>
+        <button type="submit" id="form-submit" class="btn btn-primary btn-block">Create room</button>
+      </form>
+    </section>
+
+    <!-- Room -->
+    <section id="view-room" class="view view-room" hidden aria-labelledby="room-heading">
+      <h1 id="room-heading" class="sr-only">Room</h1>
+      <div class="room-grid">
+        <div class="room-main">
+          <p id="room-alert" class="notice notice-error" role="alert" hidden></p>
+
+          <section id="stage" class="stage" aria-label="Wheel and results">
+            <div id="wheel-area" class="wheel-area">
+              <div id="wheel-stage" class="wheel-stage">
+                <svg id="wheel-pointer" class="wheel-pointer" viewBox="0 0 28 30" aria-hidden="true" focusable="false">
+                  <path d="M14 27.5c-1 0-1.9-.55-2.4-1.45L4.3 11.6C3.2 9.5 4.7 7 7.1 7h13.8c2.4 0 3.9 2.5 2.8 4.6l-7.3 14.45c-.5.9-1.4 1.45-2.4 1.45Z"/>
+                </svg>
+                <div id="wheel-shadow" class="wheel-shadow" aria-hidden="true"></div>
+                <div id="wheel-rotor" class="wheel-rotor" role="img" aria-label="Wheel"></div>
+              </div>
+              <div class="wheel-actions">
+                <button type="button" id="spin-btn" class="btn btn-primary btn-large" hidden>Spin</button>
+                <p id="wheel-status" class="wheel-status"></p>
+              </div>
+            </div>
+
+            <div id="result-area" class="result-area" hidden>
+              <div class="result-head">
+                <div>
+                  <h2 id="result-title" class="large-title" tabindex="-1">Result</h2>
+                  <p id="my-count" class="my-count"></p>
+                </div>
+                <div class="toggles">
+                  <label class="inline-switch">
+                    <input type="checkbox" id="mine-only" role="switch">
+                    <span class="switch" aria-hidden="true"></span>
+                    <span>My tasks only</span>
+                  </label>
+                  <label class="inline-switch" id="show-first-wrap" hidden>
+                    <input type="checkbox" id="show-first" role="switch">
+                    <span class="switch" aria-hidden="true"></span>
+                    <span>Show first spin</span>
+                  </label>
+                </div>
+              </div>
+              <p id="viewing-first" class="notice" hidden>This is the first spin. The second spin replaced it and is the final result.</p>
+              <div class="group result-group">
+                <table id="result-table" class="result-table" role="table">
+                  <caption class="sr-only">Task assignments</caption>
+                  <thead role="rowgroup">
+                    <tr role="row">
+                      <th role="columnheader" scope="col">Task</th>
+                      <th role="columnheader" scope="col">Theme</th>
+                      <th role="columnheader" scope="col">Device</th>
+                      <th role="columnheader" scope="col">Platform</th>
+                      <th role="columnheader" scope="col">Task team</th>
+                      <th role="columnheader" scope="col">Assigned to</th>
+                      <th role="columnheader" scope="col">Their team</th>
+                      <th role="columnheader" scope="col">Team match</th>
+                    </tr>
+                  </thead>
+                  <tbody id="result-body" role="rowgroup"></tbody>
+                </table>
+                <p id="result-empty" class="empty" hidden>You have no tasks in this spin.</p>
+              </div>
+            </div>
+          </section>
+
+          <section id="complaints" class="group complaints" aria-label="Complaints" hidden>
+            <div class="complaint-text">
+              <p id="complaint-count" class="complaint-count"></p>
+              <p id="complaint-hint" class="footnote"></p>
+            </div>
+            <div class="complaint-actions">
+              <button type="button" id="complain-btn" class="btn btn-tinted">Complain</button>
+              <button type="button" id="respin-btn" class="btn btn-primary" hidden>Spin again</button>
+            </div>
+          </section>
+        </div>
+
+        <aside class="people" aria-labelledby="people-title">
+          <div class="section-head">
+            <h2 id="people-title" class="title-3">People</h2>
+            <p id="people-summary" class="footnote"></p>
+          </div>
+          <ul id="people-list" class="group people-list"></ul>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
