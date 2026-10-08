@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Roulette</title>
+  <meta name="description" content="Randomly assign QA tasks to developers with device-aware task filtering." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">e3dc QA</p>
+        <h1>QA Roulette</h1>
+        <p class="subtitle">Spin the wheel. Get a task. Respect the device requirements.</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="resetAssignmentsBtn" class="button button-ghost" type="button">
+          Reset assignments
+        </button>
+      </div>
+    </header>
+
+    <section class="stats-grid" aria-label="Assignment statistics">
+      <article class="stat-card">
+        <span class="stat-label">Tasks</span>
+        <strong id="taskCount">0 / 0</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Remaining</span>
+        <strong id="remainingCount">0</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Mobile-ready</span>
+        <strong id="mobileReadyCount">0</strong>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel developer-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Step 1</p>
+            <h2>Developer</h2>
+          </div>
+          <span class="status-dot" aria-hidden="true"></span>
+        </div>
+
+        <label class="field-label" for="developerName">Name</label>
+        <input
+          id="developerName"
+          class="text-input"
+          type="text"
+          autocomplete="off"
+          placeholder="Enter developer name"
+          maxlength="60"
+        />
+
+        <div class="field-block">
+          <span class="field-label">Phone</span>
+          <p class="field-help">Mobile tasks can be assigned when the developer has at least one selected phone.</p>
+
+          <label class="check-row">
+            <input id="androidCheckbox" type="checkbox" />
+            <span class="check-control"></span>
+            <span class="check-copy">
+              <strong>Android</strong>
+              <small>Android phone available</small>
+            </span>
+          </label>
+
+          <label class="check-row">
+            <input id="iosCheckbox" type="checkbox" />
+            <span class="check-control"></span>
+            <span class="check-copy">
+              <strong>iOS</strong>
+              <small>iPhone available</small>
+            </span>
+          </label>
+        </div>
+
+        <div id="eligibilityMessage" class="info-box">
+          Enter a name and select the phone(s) you have.
+        </div>
+
+        <div class="developer-actions">
+          <button id="clearDeveloperBtn" class="button button-secondary" type="button">
+            Clear
+          </button>
+          <button id="spinBtn" class="button button-primary" type="button">
+            <span class="button-icon">↻</span>
+            Spin
+          </button>
+        </div>
+      </aside>
+
+      <section class="panel wheel-panel" aria-live="polite">
+        <div class="panel-heading wheel-heading">
+          <div>
+            <p class="section-kicker">Step 2</p>
+            <h2>Spin the wheel</h2>
+          </div>
+          <div class="wheel-counter">
+            <span id="eligibleCount">0</span>
+            <span>eligible</span>
+          </div>
+        </div>
+
+        <div class="wheel-stage">
+          <div class="pointer" aria-hidden="true"></div>
+
+          <div id="wheel" class="wheel">
+            <div class="wheel-center">
+              <span class="wheel-center-star">✦</span>
+              <span class="wheel-center-label">READY</span>
+            </div>
+          </div>
+
+          <div class="wheel-shadow" aria-hidden="true"></div>
+        </div>
+
+        <div class="wheel-tip">
+          <span class="tip-icon">✦</span>
+          <span>Desktop tasks are always eligible. Mobile tasks require Android or iOS.</span>
+        </div>
+      </section>
+
+      <section class="panel result-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-kicker">Step 3</p>
+            <h2>Assignment</h2>
+          </div>
+        </div>
+
+        <div id="emptyResult" class="empty-result">
+          <div class="empty-icon">◎</div>
+          <h3>No task yet</h3>
+          <p>Complete the developer details and spin the wheel.</p>
+        </div>
+
+        <article id="resultCard" class="result-card hidden">
+          <div class="result-badge">ASSIGNED</div>
+          <div class="result-title-row">
+            <div>
+              <p id="resultWhat" class="result-eyebrow">Critical User Flows</p>
+              <h3 id="resultTheme">e3dc</h3>
+            </div>
+            <div id="resultDeviceBadge" class="device-badge">mobile</div>
+          </div>
+
+          <div class="result-grid">
+            <div>
+              <span class="result-label">Browser / device</span>
+              <strong id="resultDevice">Mobile</strong>
+            </div>
+            <div>
+              <span class="result-label">Developer</span>
+              <strong id="resultDeveloper">—</strong>
+            </div>
+          </div>
+
+          <div class="users-block">
+            <span class="result-label">Users</span>
+            <div id="resultUsers" class="tag-list"></div>
+          </div>
+
+          <div class="result-footer">
+            <span id="resultTimestamp">—</span>
+            <span id="resultPlatform">—</span>
+          </div>
+        </article>
+
+        <button id="spinAgainBtn" class="button button-primary full-width hidden" type="button">
+          <span class="button-icon">↻</span>
+          Spin again
+        </button>
+      </section>
+    </section>
+
+    <section class="panel history-panel">
+      <div class="history-header">
+        <div>
+          <p class="section-kicker">Session</p>
+          <h2>Assignment history</h2>
+        </div>
+        <span id="historyCount" class="history-count">0 assignments</span>
+      </div>
+
+      <div id="historyEmpty" class="history-empty">
+        No assignments yet.
+      </div>
+
+      <div id="historyList" class="history-list"></div>
+    </section>
+
+    <footer class="footer">
+      <span>Vanilla HTML · CSS · JavaScript · localStorage</span>
+      <span id="storageStatus">Saved locally</span>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
