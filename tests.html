@@ -3,33 +3,44 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>WheelOfTest — Business logic tests</title>
+  <meta name="theme-color" content="#090E0D">
+  <title>WheelOfTest · Browser Test Harness</title>
   <link rel="stylesheet" href="./styles.css">
   <style>
-    .test-card { max-width: 960px; margin: 22px auto; padding: 28px; }
-    #test-results { display: grid; gap: 10px; padding-left: 0; list-style: none; }
-    #test-results li { padding: 12px 14px; border-radius: 12px; background: #f7f5fa; font-size: .85rem; line-height: 1.45; }
-    #test-results li.passed { border: 1px solid #d6efe5; background: #f0fbf6; }
-    #test-results li.failed { border: 1px solid #f2cbd8; background: #fff2f5; }
-    #test-results li strong { margin-right: 6px; font-size: .72rem; }
-    .passed strong { color: #267a62; }
-    .failed strong { color: #a6425b; }
+    .tests-shell { width: min(1040px, calc(100% - 32px)); margin: 28px auto; }
+    .tests-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap; margin-bottom:22px; }
+    .tests-heading h1 { margin:7px 0; font-size:clamp(28px,5vw,44px); letter-spacing:-.05em; }
+    .test-summary { display:flex; gap:12px; flex-wrap:wrap; margin:18px 0; }
+    .test-summary .hero-stat { min-width:100px; padding:12px 14px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+    .test-results { display:grid; gap:7px; margin:0; padding:0; list-style:none; }
+    .test-row { display:grid; grid-template-columns:24px minmax(0,1fr); align-items:start; gap:10px; padding:12px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface); overflow-wrap:anywhere; }
+    .test-row.pass { border-left:3px solid var(--viridian-bright); }
+    .test-row.fail { border-left:3px solid var(--danger); background:#251919; }
+    .test-mark { font-weight:850; color:var(--viridian-bright); }
+    .test-row.fail .test-mark { color:var(--danger); }
+    .test-row strong { display:block; font-size:12px; }
+    .test-row p { margin:3px 0 0; color:var(--text-muted); font-size:11px; white-space:pre-wrap; }
+    .test-actions { display:flex; gap:8px; flex-wrap:wrap; }
+    #test-details { margin-top:18px; }
   </style>
   <script type="module" src="./tests.js"></script>
 </head>
 <body>
-  <div class="site-shell">
-    <header class="topbar"><a class="brand" href="./"><span class="brand-mark" aria-hidden="true">✳</span><span>WheelOfTest</span></a><div class="topbar-tag">Standalone test harness</div></header>
-    <main class="main-content">
-      <section class="card test-card">
-        <p class="eyebrow">Pure business logic</p>
-        <h1 style="font-size:clamp(2rem,5vw,3rem)">Assignment rules check</h1>
-        <p class="subtle">This no-build harness checks task eligibility, team priority, and the two-spin complaint lifecycle. It does not test real browser-to-browser network connectivity.</p>
-        <h2 id="test-summary">Running tests…</h2>
-        <ol id="test-results"></ol>
-        <a class="button button-soft" href="./">← Back to WheelOfTest</a>
-      </section>
-    </main>
-  </div>
+  <main id="test-app" class="tests-shell">
+    <header class="tests-heading">
+      <div>
+        <span class="eyebrow">WHEELOFTEST · QUALITY CHECKS</span>
+        <h1>Browser test harness</h1>
+        <p class="muted">Runs real assertions against pure domain and storage modules. No npm, build system or external test library.</p>
+      </div>
+      <div class="test-actions"><a class="button button-secondary" href="./index.html">Open application</a><button class="button button-primary" id="run-tests" type="button">Run tests again</button></div>
+    </header>
+    <section class="panel">
+      <div id="test-status" role="status" aria-live="polite">Running assertions…</div>
+      <div id="test-summary" class="test-summary"></div>
+      <ol id="test-results" class="test-results"></ol>
+      <div id="test-details"></div>
+    </section>
+  </main>
 </body>
 </html>

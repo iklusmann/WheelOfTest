@@ -1,141 +1,147 @@
 # WheelOfTest
 
-WheelOfTest is a colorful, static QA assignment roulette. It assigns unused QA tasks to connected testers, prefers same-team release work when possible, checks mobile-device availability, and supports one complaint-triggered replacement spin.
+WheelOfTest is a static, browser-based QA assignment tool for a small developer team. It draws a **task/developer pair**, prioritizes team matches, records complaints, and keeps a compact audit trail. It is intentionally local-first: there is no backend, cloud database, external signaling provider, or STUN/TURN service.
 
-## Technology and repository layout
+## What this implementation does
 
-- HTML5 and CSS3
-- Vanilla JavaScript ES modules
-- Browser-native `RTCPeerConnection` and `RTCDataChannel`
-- `localStorage` for host-side room state and guest-side profile convenience
-- GitHub Pages for static hosting
-- GitHub Actions for deployment
+- Host-owned room lifecycle with a six-character room code and a role-specific invite URL.
+- Manual WebRTC offer/answer exchange using one `RTCPeerConnection` and ordered `RTCDataChannel` per guest.
+- Versioned host `localStorage` persistence, guest-local profile persistence, schema validation, normalization of old connection flags, and visible storage failures.
+- Exactly 22 catalog tasks, team-first pair selection, mobile-device eligibility, Spin 1, one complaint per participant, Spin 2 replacement, explicit finalization, and immutable history snapshots.
+- A premium dark charcoal / gold / silver / viridian UI with accessible focus states, keyboard-operable controls, responsive layouts, and reduced-motion support.
+- A browser test harness that imports the pure business logic directly. No npm, build step, or third-party runtime dependency is needed.
 
-There is no build step, Node/npm runtime requirement, framework, external component or animation library, database, hosted backend, STUN/TURN server, public signaling service, or GitHub API token.
+## Important networking limitation
 
-```text
-WheelOfTest/
-├── index.html
-├── styles.css
-├── app.js
-├── logic.js
-├── tests.html
-├── tests.js
-├── README.md
-└── .github/
-    └── workflows/
-        └── deploy.yml
+GitHub Pages only serves static files. A room URL or room code is a locator; it does **not** create shared room storage, signaling, or a live session.
+
+The host and every guest must manually exchange a unique SDP offer/answer code. Connections use `new RTCPeerConnection({ iceServers: [] })`; this code intentionally has no STUN/TURN fallback. Direct host candidates can work on the same LAN or some permissive networks, but NAT, VPN, corporate firewalls, browser policies, and restrictive routers can prevent connection. Connectivity across arbitrary networks is not guaranteed. The UI never fabricates a connected participant, and guests do not show a snapshot as live until a current connection and host snapshot are received.
+
+The host browser remains the only authority while it is open and connected. If the host closes the tab, refreshes, loses storage, or loses the peer connection, live collaboration ends. Persisted host state remains on that browser unless its local storage is cleared. This is an internal convenience tool, not an authorization or security boundary.
+
+## Run locally (no build tools)
+
+Use a local HTTP server because browser ES modules generally cannot be loaded from a `file://` URL.
+
+```bash
+cd WheelOfTest
+python -m http.server 8000
 ```
 
-`logic.js` holds the task catalog and pure assignment/lifecycle rules separately from presentation and peer networking. `tests.html` is a standalone no-build test harness for those business rules.
+Open [http://localhost:8000/](http://localhost:8000/) in a current browser. `localhost` is a secure context for browser features that require one. Keep the terminal/server open while using the app.
 
-## Run locally
+Open [http://localhost:8000/tests.html](http://localhost:8000/tests.html) to run the assertion harness. The tests import `domain.js`, `storage.js`, `tasks.js`, and signaling-code validation without starting the application UI or opening a peer connection. They report actual pass/fail results in the page.
 
-Serve the folder from a local HTTP server so ES modules and WebRTC are available. A browser's `file://` restrictions may block ES module imports.
+## Host flow
 
-For example, use any static file server you already have, or VS Code's Live Server extension. Open the served `index.html`. The application itself does not require Node or npm.
+1. Open WheelOfTest and select **Create a test room**. Existing saved rooms are retained; creating a new room does not delete them.
+2. Optionally enable **I'll test too** and enter a name, team, and phone availability. Without that explicit profile, the host is not a tester and will not appear in the eligible tester pool.
+3. Share the **Guest invite URL**. It includes `room` and `role=guest`; it is not a secret and is not proof of membership.
+4. For each guest, select **Create connection code**. Each generated offer belongs to exactly one connection row and expires after 10 minutes.
+5. Send that offer code to one intended guest using your normal out-of-band channel.
+6. Paste the guest's returned answer into the **same row** and choose **Apply matching answer**. The profile becomes a registered live participant only after the data channel opens and its profile is accepted and persisted.
+7. Review actual live participants and their teams/devices before selecting **Spin 1 · Draw assignment**.
+8. If a connected, accepted participant files a complaint, the host may run **Spin 2 · Resolve**. Spin 2 chooses only unused tasks and replaces the original result while retaining the first result as challenged/void history.
+9. If there are no complaints, the host can **Accept result · Finish room** without using Spin 2. If a complaint exists but no compatible replacement pair is available, the host may reconnect/add an eligible tester and retry; alternatively, the host can explicitly confirm acceptance of the original assignment. The UI warns that a complaint was filed.
+10. A completed room never spins again. Create a new room for the next assignment.
 
-You can also open `tests.html` on the same local static server to run the business-logic test suite in the browser. The harness does not test real network connectivity between different browsers.
+## Guest flow
 
-## Deploy to GitHub Pages
+1. Open the invite URL. If you only have a room code, enter it on the landing page.
+2. Enter your display name, select exactly one team (`AF`, `CYD`, or `PB`), and select Android and/or iOS availability. Neither phone is allowed; it means you can receive desktop tasks only.
+3. Paste the **current host offer code** and select **Create answer code**.
+4. Send the resulting answer code back to the host. Keep this browser tab open while the host applies it.
+5. Once the data channel opens, the guest sends their profile. Wait for the first authoritative host snapshot before treating room details as current.
+6. After Spin 1 and before completion, a connected participant may complain once. A complaint is a request only; it is recorded only after host validation. Guests cannot choose assignments or mutate host-owned room state.
 
-1. Put the files in the root of a GitHub repository and commit them to `main`.
-2. Push the commit to GitHub.
-3. Open repository **Settings → Pages**.
-4. Set the deployment source to **GitHub Actions**.
-5. Wait for the **Deploy WheelOfTest to GitHub Pages** workflow to complete.
-6. Open the published Pages URL, typically `https://USERNAME.github.io/REPOSITORY/`.
+Offer/answer codes can be large. Copy/paste the complete JSON code without adding surrounding text. Signaling codes are capped at 200 KiB and expire after 10 minutes. Data-channel messages are capped at 64 KiB. A room accepts up to 100 profiles to keep its complete snapshots within the message-size limit.
 
-The workflow in `.github/workflows/deploy.yml` uploads the repository root directly. There is no build step. HTML, CSS and module paths are relative so repository-subpath hosting works.
+## Connection status and liveness
 
-## Create a room and invite testers
+- **Creating offer / gathering ICE**: the browser is preparing a description and collecting local ICE candidates.
+- **Waiting for answer**: send the offer to exactly one guest and paste that guest's answer into the matching row.
+- **Channel open**: the data channel opened; this alone does not make a guest eligible until their profile is accepted.
+- **Connected live**: the channel is open, a profile is accepted, and recent heartbeats are arriving.
+- **Heartbeat stale / disconnected**: that peer is temporarily excluded from assignment selection. Some `disconnected` states recover; failed/closed channels need a new offer/answer exchange.
+- **Guest offline/history view**: the guest must not interpret the last received snapshot as current. A fresh host snapshot is required to return to a live state.
 
-1. Open WheelOfTest and choose **Create a test room**.
-2. The host browser creates a six-character room code and stores the room state in that browser's `localStorage`.
-3. Copy the room link and share it with testers. The link contains a room identifier; it does **not** carry the shared room state.
-4. In the host's room, choose **Create connection code**. This creates a WebRTC offer for one peer.
-5. Send that offer code to one tester, separately from the room URL.
-6. The tester opens the room URL, enters their name, phone availability and team, pastes the offer, and generates an answer code.
-7. The tester sends the answer code back to the host. The host pastes it into the matching connection card and chooses **Accept answer & connect**.
-8. When the data channel opens, the tester's profile is sent to the host and the room snapshot is synchronized.
-9. Repeat the offer/answer exchange for each additional tester. Each developer needs their own peer connection.
+Heartbeat cadence is 5 seconds; an 18-second freshness limit marks a peer stale. Offer/answer generation times out after 15 seconds if ICE gathering does not complete, and an unopened data channel reports a 30-second connection timeout. These are user-facing retry conditions, not a guarantee of connectivity.
 
-The host can optionally add themselves to the tester pool from the participants panel. This local host profile does not need a peer connection.
+## Assignment algorithm
 
-Keep the host room open while the room is active. If either side refreshes or closes its page, the WebRTC connection is lost. The host must create a new offer and each affected tester must generate a new answer.
+For each spin, WheelOfTest:
 
-## How team-first assignment works
+1. Enumerates unused catalog tasks.
+2. Considers only currently connected, profile-accepted participants (plus the explicit host-local tester if enabled and the host page is active).
+3. Builds all `(task, developer)` pairs permitted by device compatibility.
+4. Selects uniformly from same-team pairs if at least one exists. Mappings are `AF Release → AF`, `PB Release → PB`, and `CD Release → CYD`; `CD Release` remains the exact source task label. `Critical User Flows` tasks are neutral and do not displace available same-team pairs.
+5. If there are no same-team pairs, selects uniformly from all valid pairs, including neutral and cross-team pairs.
 
-The candidate pool contains task/developer pairs, not just tasks or people. Only connected participants and unused tasks are considered. A mobile task requires `android === true` or `ios === true`; desktop tasks are available regardless of phone selections.
+Random selection is injected into `chooseEligiblePair` so tests can force exact indexes. Uniformity is over **pairs**, not people or tasks: a task that has more eligible developers contributes more pairs and therefore more chances to be drawn. This weighting is intentional and displayed as “valid pairs” in the dashboard.
 
-The assignment algorithm follows these steps:
+## Phone compatibility
 
-1. Create every valid pair from unused tasks and connected participants.
-2. Remove mobile pairs for participants who selected neither phone.
-3. Find pairs where a task's preferred team matches the developer's selected team.
-4. If any matching pairs exist, choose uniformly at random from those pairs; otherwise choose uniformly from all remaining valid pairs.
+The catalog only distinguishes `desktop` and generic `mobile` platforms. Every desktop task is compatible regardless of phone selection. A mobile task requires at least one of Android or iOS. WheelOfTest does not infer OS-specific requirements from the device label and does not use the `users` metadata as an eligibility rule.
 
-Consequently, the same-team preference is soft rather than an absolute rule. Critical User Flows tasks are team-neutral and cannot displace matching release pairs when those exist. Because selection is uniform across eligible *pairs*, tasks with more eligible developers have more possible pairs; this weighting is intentional and documented in `logic.js`.
+## Room state, storage and refresh behavior
 
-The team mapping is defined in one place near the top of `logic.js`:
+- The host stores room state under a versioned, room-specific key in its browser `localStorage`. The stored object contains participants, spin count, assignments, used tasks, complaints, and a monotonically increasing `stateVersion`.
+- The host persists every committed domain transition before installing it in memory, broadcasting a snapshot, or beginning the wheel reveal. If storage fails, the proposed state is rejected, the old committed state remains in memory, and state-changing controls are paused until the storage retry succeeds.
+- Live data channels, RTC objects, heartbeat timestamps, and active connection flags are never durable room facts. Host refresh restores state/history but all remote guests begin disconnected. A previously saved `connected` flag is stripped during normalization and cannot establish eligibility.
+- Guests persist only their own profile. They do not persist an independently authoritative room snapshot; on refresh, they must exchange fresh offer/answer codes and receive a new host snapshot.
+- A host can resume a saved room through the host URL or the dashboard's saved-room card. The host must explicitly choose to create a new room; unfinished and completed rooms are not silently erased.
+- Clearing browser storage removes that browser's saved rooms. There is no server-side backup or recovery.
 
-```js
-export const TEAM_MAPPING = Object.freeze({
-  "AF Release": "AF",
-  "PB Release": "PB",
-  "CD Release": "CYD"
-});
-```
+## Spin and complaint rules
 
-The source task matrix calls the third release category `CD Release`, while the requested team is `CYD`; the default mapping above resolves that discrepancy and can be changed there.
+- **Spin 1** is available once in `waiting`, only to the host and only when a compatible live pair exists. The valid result is committed and stored before the decorative wheel animation starts.
+- **Complaint** is accepted in `result` or `challenged`, before completion, from a connected accepted participant, at most once per participant per room. It does not automatically trigger a spin.
+- **Spin 2** is host-only, requires at least one valid complaint and a replacement pair, excludes every used task (including Spin 1), and completes the room. The same developer may be selected again if still eligible.
+- **Accept result** finalizes Spin 1 without consuming Spin 2 when there are no complaints.
+- **Accept original anyway** is a warned exception after a complaint if no replacement pair is available. It finalizes the original assignment but keeps the complaint and challenge marker in the audit trail.
+- Every accepted state transition increments `stateVersion` exactly once. A completed room rejects future spins and complaints.
 
-## Spin lifecycle
+## Design system
 
-- **Spin 1:** the host selects a valid pair before the animation starts. The provisional assignment and task usage are committed to host storage before animation, so a refresh cannot reset the spin count or make the same task available again.
-- **Complaint:** a connected participant can complain once after Spin 1. The host validates and records the complaint, then broadcasts the updated room snapshot. The complaint does not automatically start another spin.
-- **Spin 2:** only the host can start it, and only after a complaint. The first task stays unavailable, the first assignment is marked `challenged`, and the replacement becomes the final assignment. The room is completed after Spin 2.
-- **No complaint:** the host can choose **Accept result & finish** to finalize Spin 1. This does not consume another spin.
-- **No valid replacement:** Spin 2 remains disabled if no compatible unused task/developer pair exists. Device compatibility is never bypassed.
-- **Completed room:** no additional spins or complaints are allowed. Create a new room to run a new assignment.
+The CSS custom properties at the top of `styles.css` are the source of truth for the dark charcoal palette. Gold (`--gold`) is reserved for primary actions and result emphasis; silver (`--silver`) is neutral metadata; viridian (`--viridian`) indicates healthy connections and valid/positive states. Muted red is for failed/destructive actions and amber for warnings. Statuses are labelled in text as well as color. The UI uses system fonts, inline SVG/CSS details, visible keyboard focus, semantic controls and `prefers-reduced-motion` support.
 
-Assignment history keeps the first challenged assignment and the final replacement, including task details, developer/team details, selected devices, user roles and timestamps.
+## Security and privacy notes
 
-## Persistence and host authority
+- Room codes and signaling codes are not authentication. Share offer/answer codes only with intended participants.
+- Browser-side validation is not server-enforced authorization. A peer can inspect data delivered to it, and browser identity can be reclaimed after a peer disconnects.
+- Names and other user-supplied content are rendered as text nodes; user strings are not inserted using `innerHTML`.
+- No analytics, cookies, external assets, API calls, external libraries or third-party signaling are used.
+- Do not store confidential credentials or sensitive personal data in participant profiles.
 
-The host's room state, used task IDs, complaints, spin count and assignment history are stored in the host browser's `localStorage`. Guest browsers store only their own profile for convenience; they do not independently persist authoritative room state. The host is authoritative only while the host page is running and peer connections are active. This is not server-enforced security.
+## Manual integration checks
 
-A host refresh restores the local room and history but marks remote participants disconnected. A completed room stays completed. A guest refresh restores the profile but not a live connection or a live snapshot; the guest must reconnect and receive a fresh snapshot from the host.
+The unit harness cannot prove that two real networks can establish a WebRTC connection. Before relying on it with a team, test the scenarios below in current browsers:
 
-## Important architecture limitations
+1. **Same LAN:** start the host at the GitHub Pages HTTPS URL (or a local HTTP server), open a guest browser on the same network, exchange the offer/answer, confirm only after the data channel and profile are accepted.
+2. **Different networks:** put the guest on a different ISP/mobile hotspot. Expect that the connection may fail because no STUN/TURN server is available.
+3. **VPN / restrictive network:** test with the corporate VPN and typical firewall policies; record the exact browser/OS and failure diagnostics. Do not report this as supported unless observed in your environment.
+4. **Reload and reconnect:** reload host and guest separately. Confirm host state/history survives, peers become disconnected, guests do not claim cached state is live, and fresh codes are required.
+5. **Peer disconnect:** close one guest tab, wait for its liveness to expire, and verify that it is excluded from a spin. Reconnect it using a fresh connection.
+6. **Storage failure:** use browser devtools to simulate blocked/quota-failing storage where possible; confirm state-changing actions pause and the previously committed result is not animated or broadcast as a new result.
+7. **Responsive/keyboard:** check viewport widths 320 px, 390 px, tablet, and desktop; navigate forms and buttons with Tab/Enter/Space; enable reduced motion; inspect contrast and visible focus.
 
-GitHub Pages is static hosting. Under the no-backend/no-signaling-service restriction, WheelOfTest cannot offer server-side shared room storage, room discovery, or automatic signaling. **A room URL and room code alone cannot create a shared multiplayer room.** The host's browser must remain open and each guest must exchange WebRTC offer/answer codes with the host.
+## GitHub Pages deployment
 
-The app uses `RTCPeerConnection` with an empty `iceServers` list, as requested. There is no STUN server to discover public network addresses and no TURN relay to carry traffic when direct connectivity fails. Direct WebRTC can work on compatible networks, but it is not guaranteed across NATs, VPNs, browser privacy restrictions, corporate firewalls or different networks. ICE gathering timing out, a peer connection failing, or a tester refreshing the page can require a fresh code exchange. No UI state is presented as live unless a peer connection actually opens and a host snapshot arrives.
+The included `.github/workflows/deploy.yml` deploys the repository root on pushes to `main` and supports manual runs through `workflow_dispatch`. It uses the official Pages actions and grants only `contents: read`, `pages: write`, and `id-token: write`.
 
-Use HTTPS (GitHub Pages provides it) or localhost for reliable browser clipboard and WebRTC support. A room code is only an identifier, not a password or access-control mechanism. Do not use room codes as a security boundary or place confidential information in room profiles.
+1. Create a GitHub repository and push this project to the `main` branch.
+2. In **Settings → Pages**, set the build/deployment source to **GitHub Actions**.
+3. Ensure the workflow is enabled, then push to `main` or run **Actions → WheelOfTest · Deploy → Run workflow**.
+4. Open the URL printed by the deployment job. Project sites use a path such as `https://USERNAME.github.io/REPOSITORY/`; all imports, styles and navigation use relative paths so that subpath works.
+5. Visit `/tests.html` on the deployed site and run the browser harness.
 
-## Task catalog and device rules
+### Deployment checklist
 
-The catalog preserves the 22 provided task IDs, themes, device/browser values, platform requirements and user roles. It includes four team-neutral Critical User Flows tasks and six release tasks for each release group. Team preference is configured separately from the stable task IDs.
-
-Phone availability is represented by two independent booleans:
-
-```js
-{ android: true, ios: false }
-```
-
-Both, either, or neither are allowed. A tester with no phone can still receive a desktop task; any mobile task requires at least one selected phone.
-
-## Business-logic tests
-
-Open `tests.html` on a local static server or the deployed Pages site. The harness checks:
-
-- All 22 task IDs are unique and team mapping is configured.
-- Desktop/mobile eligibility for none, Android-only, iOS-only and dual-phone testers.
-- Disconnected participants are excluded.
-- Matching-team preference and cross-team fallback.
-- Spin 1, complaint validation, duplicate complaint rejection, Spin 2 replacement and finalization.
-- Acceptance of Spin 1 without consuming Spin 2.
-- No spin when there are no eligible pairs.
-
-These tests cover pure business logic only. They do not guarantee peer-to-peer connectivity on any particular network. The app intentionally avoids claiming that a network connection test passed unless an actual peer connection is established in the browser.
+- [ ] Repository default branch is `main`.
+- [ ] GitHub Pages source is **GitHub Actions**.
+- [ ] The first workflow run completed successfully.
+- [ ] The deployed URL loads `index.html` and relative ES module imports work.
+- [ ] `/tests.html` runs tests without a build or npm install.
+- [ ] The host/guest paths include `?room=CODE&role=host` and `?room=CODE&role=guest` respectively.
+- [ ] Team members understand that offer/answer exchange is manual and cross-network connectivity is not guaranteed.
+- [ ] Real WebRTC integration scenarios above have been exercised in the target environment.

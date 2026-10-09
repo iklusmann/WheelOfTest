@@ -3,34 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#fff8fb">
-  <meta name="description" content="A cheerful, team-aware QA task roulette for WheelOfTest.">
-  <title>WheelOfTest — QA assignment roulette</title>
+  <meta name="theme-color" content="#090E0D">
+  <meta name="description" content="WheelOfTest is a local-first QA task assignment roulette with transparent team-first matching and a two-spin complaint flow.">
+  <title>WheelOfTest</title>
   <link rel="stylesheet" href="./styles.css">
   <script type="module" src="./app.js"></script>
 </head>
 <body>
-  <div class="site-shell">
-    <header class="topbar">
-      <a class="brand" href="./" aria-label="WheelOfTest home">
-        <span class="brand-mark" aria-hidden="true">✳</span>
-        <span>WheelOfTest</span>
-      </a>
-      <div class="topbar-tag"><span class="status-dot"></span> QA assignment party</div>
-    </header>
-
-    <main id="app" class="main-content" aria-live="polite">
-      <section class="card loading-card">
-        <span class="loading-orbit" aria-hidden="true">✦</span>
-        <p>Getting the wheel ready…</p>
-      </section>
-    </main>
-
-    <footer class="site-footer">
-      <span>Made for curious testers ✨</span>
-      <span>Static app · No account needed</span>
-    </footer>
-  </div>
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <a class="skip-link" href="#app">Skip to application</a>
+  <main id="app" aria-live="off">
+    <div class="boot-message">Loading WheelOfTest…</div>
+  </main>
+  <noscript><p class="noscript-message">WheelOfTest requires JavaScript modules to run in this browser.</p></noscript>
 </body>
 </html>
