@@ -121,17 +121,19 @@ export function validateTask(input, options = {}) {
   const theme = input?.theme;
   if (!THEMES.some((t) => t.value === theme) && !(keep?.theme && theme === keep.theme)) errors.theme = "Choose a theme.";
 
-  const devices = pickOptions(input?.devices, DEVICES);  // no extras: the database only knows these three
+  const devices = pickOptions(input?.devices, DEVICES);  // no extras: the database only knows these
   if (devices.length === 0) errors.devices = "Select at least one device.";
 
   const ok = Object.keys(errors).length === 0;
+  // Mac without Desktop is Safari only, so there is no browser to pick.
+  const macOnly = devices.includes("mac") && !devices.includes("desktop");
   return {
     ok,
     errors,
     value: ok
       ? {
           what, theme, team, devices,
-          browsers: pickOptions(input?.browsers, BROWSERS, keep?.browsers),
+          browsers: macOnly ? [] : pickOptions(input?.browsers, BROWSERS, keep?.browsers),
           users: pickOptions(input?.users, USER_LEVELS, keep?.users)
         }
       : null

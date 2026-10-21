@@ -162,7 +162,7 @@ begin
 end $$;
 
 -- A room's task list (1-50 tasks). Shape of one task:
---   { id, what, theme, team: 'AF'|'CYD'|'PB'|null, devices: ['desktop'|'android'|'ios', ...] (1+),
+--   { id, what, theme, team: 'AF'|'CYD'|'PB'|null, devices: ['desktop'|'mac'|'android'|'ios', ...] (1+),
 --     browsers: [text] (0-10), users: [text] (0-10) }
 -- Keep the limits equal to maxTasks and taskNameMaxLength in config.js.
 create or replace function public._wot_clean_tasks(p_tasks jsonb)
@@ -188,7 +188,7 @@ begin
        or char_length(v_task ->> 'theme') not between 1 and 40
        or coalesce(jsonb_typeof(v_task -> 'team'), 'null') not in ('null', 'string')
        or (v_task ->> 'team') not in ('AF', 'CYD', 'PB')
-       or not public._wot_is_string_list(v_task -> 'devices', 1, 3, array['desktop', 'android', 'ios'])
+       or not public._wot_is_string_list(v_task -> 'devices', 1, 4, array['desktop', 'mac', 'android', 'ios'])
        or not public._wot_is_string_list(coalesce(v_task -> 'browsers', '[]'::jsonb), 0, 10)
        or not public._wot_is_string_list(coalesce(v_task -> 'users', '[]'::jsonb), 0, 10)
     then

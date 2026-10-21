@@ -562,6 +562,8 @@ input:focus-visible + .switch { outline: 3px solid var(--focus-ring); outline-of
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.4l2.6 2.6L10 3.2' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 .chip input:focus-visible + span { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+fieldset:disabled .chip { opacity: 0.45; cursor: not-allowed; }
+fieldset:disabled .chip input { cursor: not-allowed; }
 
 /* "+" beside a group label: select every option in the group */
 .legend-row { display: flex; align-items: center; gap: 8px; }

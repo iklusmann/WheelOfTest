@@ -80,9 +80,9 @@ function randomRoster(random) {
 }
 
 // ---------------------------------------------------------------- task data
-test("tasks.js has the 22 default tasks with unique ids and valid values", () => {
-  equal(TASKS.length, 22, "task count");
-  equal(new Set(TASKS.map((t) => t.id)).size, 22, "unique ids");
+test("tasks.js has the 16 default tasks with unique ids and valid values", () => {
+  equal(TASKS.length, 16, "task count");
+  equal(new Set(TASKS.map((t) => t.id)).size, 16, "unique ids");
   const values = (options) => options.map((o) => o.value);
   for (const t of TASKS) {
     assert(t.devices.length > 0 && t.devices.every((d) => values(DEVICES).includes(d)), `devices of ${t.id}`);
@@ -128,7 +128,7 @@ const legacyOf = (t) => ({
 });
 
 test("normalizeTask turns every legacy default task into exactly the new default", () => {
-  for (const t of TASKS) equal(normalizeTask(legacyOf(t)), JSON.parse(JSON.stringify(t)), t.id);
+  for (const t of TASKS) equal(normalizeTask(legacyOf(t)), { ...JSON.parse(JSON.stringify(t)), browsers: t.browsers.slice(0, 1) }, t.id);  // a legacy task had one browser
   equal(normalizeTask(TASKS[3]), JSON.parse(JSON.stringify(TASKS[3])), "current shape passes through");
   equal(normalizeTask({ id: "x", what: "W", theme: "flow", team: "AF", devices: ["ios"], browsers: ["safari"], users: [], extra: 1 }),
     { id: "x", what: "W", theme: "flow", team: "AF", devices: ["ios"], browsers: ["safari"], users: [] }, "unknown fields dropped");
@@ -151,6 +151,7 @@ test("canReceiveTask follows the task's devices: phones are not interchangeable"
   const iphone = person("Iphone", "AF", { ios: true }), both = person("Both", "AF", { android: true, ios: true });
   const cases = [
     [["desktop"], [true, true, true, true]],
+    [["mac"], [true, true, true, true]],
     [["android"], [false, true, false, true]],
     [["ios"], [false, false, true, true]],
     [["android", "ios"], [false, true, true, true]],
@@ -238,10 +239,13 @@ test("validateTask: team is one team or all teams; theme and at least one device
 test("validateTask: options are deduplicated, unknown values dropped, kept in option order", () => {
   const r = validateTask({
     what: "T", team: "AF", theme: "e3dc",
-    devices: ["ios", "desktop", "ios", "tablet"], browsers: ["safari", "chrome", "opera"], users: ["service", "owner", 3]
+    devices: ["ios", "desktop", "ios", "tablet"], browsers: ["firefox", "chrome", "opera"], users: ["service", "owner", 3]
   });
-  equal(r.value, { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "ios"], browsers: ["chrome", "safari"], users: ["owner", "service"] }, "clean");
+  equal(r.value, { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "ios"], browsers: ["chrome", "firefox"], users: ["owner", "service"] }, "clean");
   equal(validateTask({ what: "T", team: "AF", theme: "e3dc", devices: ["android"] }).value.browsers, [], "browsers optional");
+  const mac = { what: "T", team: "AF", theme: "e3dc", browsers: ["chrome"] };
+  equal(validateTask({ ...mac, devices: ["mac"] }).value.browsers, [], "Mac only: Safari, no browser");
+  equal(validateTask({ ...mac, devices: ["desktop", "mac"] }).value.browsers, ["chrome"], "Desktop + Mac keeps the browsers");
 });
 
 test("validateTask keep: values the task already had survive an edit, new unknown ones don't", () => {
@@ -327,7 +331,7 @@ test("offline participants receive nothing", () => {
   const r = assignTasks(TASKS, [on, off1, off2], seededRandom(11));
   equal(assignedTo(r, off1.user_id).length, 0, "off1");
   equal(assignedTo(r, off2.user_id).length, 0, "off2");
-  equal(assignedTo(r, on.user_id).length, 22, "online person gets everything");
+  equal(assignedTo(r, on.user_id).length, 16, "online person gets everything");
 });
 
 test("participants without online === true are treated as offline", () => {
@@ -438,7 +442,7 @@ test("load within a pool differs by at most one (everyone shares one pool)", () 
     const roster = [1, 2, 3, 4].map((i) => person(`S${i}`, "AF", { android: true }));
     const counts = [...loads(assignTasks(TASKS, roster, seededRandom(seed)), roster).values()];
     assert(Math.max(...counts) - Math.min(...counts) <= 1, `seed ${seed}: ${counts}`);
-    equal(counts.reduce((s, n) => s + n, 0), 22, "total");
+    equal(counts.reduce((s, n) => s + n, 0), 16, "total");
   }
 });
 
@@ -467,7 +471,7 @@ test("documented caveat: a team with one member online receives all of that team
   const pbs = [1, 2, 3].map((i) => person(`PB${i}`, "PB", { ios: true }));
   const r = assignTasks(TASKS, [soloAF, ...pbs], seededRandom(21));
   const afTasks = r.assignments.filter((a) => a.task.team === "AF");
-  assert(afTasks.length === 6 && afTasks.every((a) => a.participant_id === soloAF.user_id), "all AF tasks to the solo member");
+  assert(afTasks.length === 4 && afTasks.every((a) => a.participant_id === soloAF.user_id), "all AF tasks to the solo member");
 });
 
 // ---------------------------------------------------------------- determinism
@@ -502,7 +506,7 @@ test("random sources returning edge values (0, 0.9999999, 1) never break assignm
   const roster = [person("A", "AF", { android: true }), person("B", "AF", { ios: true })];
   for (const value of [0, 0.9999999, 1]) {
     const r = assignTasks(TASKS, roster, () => value);
-    equal(r.assignments.filter((a) => a.participant_id).length, 22, `random() = ${value}`);
+    equal(r.assignments.filter((a) => a.participant_id).length, 16, `random() = ${value}`);
   }
 });
 

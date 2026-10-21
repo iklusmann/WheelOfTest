@@ -1,7 +1,7 @@
 // Bootstrap, routing by ?room=, and wiring between domain, backend, UI and reveal.
 
 import { CONFIG, isConfigured } from "./config.js";
-import { THEMES, defaultTasks } from "./tasks.js";
+import { THEMES, BROWSERS, defaultTasks } from "./tasks.js";
 import {
   validateProfile, normalizeRoomCode, assignTasks, spinRule,
   normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable
@@ -383,7 +383,7 @@ let editorReturn = null;  // what to focus once the editor has closed: { scope, 
 let editorOpener = null;  // the button that opened the editor (the browser returns focus there on close)
 
 const currentTasks = (scope) => (scope === "draft" ? state.draftTasks : state.snapshot?.room.tasks ?? []);
-const blankTask = () => ({ what: "", theme: THEMES[0].value, team: null, devices: ["desktop"], browsers: [], users: [] });
+const blankTask = () => ({ what: "", theme: THEMES[0].value, team: null, devices: ["desktop"], browsers: BROWSERS.map((b) => b.value), users: [] });
 
 function renderDraft() {
   ui.renderFormTasks({ tasks: state.draftTasks, open: state.draftOpen });

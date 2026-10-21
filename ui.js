@@ -242,7 +242,8 @@ function taskRow(t, { editable, busy, lastOne }) {
   title.append(el("span", "task-name", t.what), el("span", "tag tag-theme", labelIn(THEMES, t.theme)));
 
   const meta = el("div", "task-meta");
-  if (t.devices.includes("desktop")) meta.append(metaItem("desktop", "Desktop"));
+  const computers = t.devices.filter((d) => !PHONE_VALUES.includes(d));
+  if (computers.length) meta.append(metaItem("desktop", labelsIn(DEVICES, computers).join(", ")));
   const phones = t.devices.filter((d) => PHONE_VALUES.includes(d));
   if (phones.length) meta.append(metaItem("phone", labelsIn(DEVICES, phones).join(", ")));
   if (t.browsers.length) meta.append(metaItem("globe", labelsIn(BROWSERS, t.browsers).join(", ")));
@@ -448,6 +449,10 @@ export function openTaskEditor({ task, isNew }) {
  * selected it dims (aria-disabled, so it keeps keyboard focus instead of dropping it).
  */
 export function syncSelectAll() {
+  const picked = new Set(Array.from(els.taskForm.querySelectorAll('input[name="devices"]:checked'), (i) => i.value));
+  const macOnly = picked.has("mac") && !picked.has("desktop");
+  els.taskBrowsersChips.closest("fieldset").disabled = macOnly;
+  if (macOnly) for (const input of els.taskBrowsersChips.querySelectorAll("input")) input.checked = false;
   for (const button of els.taskForm.querySelectorAll("[data-select-all]")) {
     const inputs = Array.from(els.taskForm.querySelectorAll(`input[name="${button.dataset.selectAll}"]`));
     const all = inputs.length > 0 && inputs.every((i) => i.checked);

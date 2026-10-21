@@ -12,11 +12,13 @@
 //   team      one team, or null for all teams
 //   devices   one or more of DEVICES. Android and iOS decide who can take the task:
 //             the assignee needs at least one of the selected phones (see domain.js).
+//             Mac always means Safari, so BROWSERS only lists the Desktop browsers.
 //   browsers  any of BROWSERS (display only)
 //   users     user levels, any of USER_LEVELS (display only)
 
 export const DEVICES = Object.freeze([
   { value: "desktop", label: "Desktop" },
+  { value: "mac", label: "Mac (Safari)" },
   { value: "android", label: "Android" },
   { value: "ios", label: "iOS" }
 ]);
@@ -24,8 +26,7 @@ export const DEVICES = Object.freeze([
 export const BROWSERS = Object.freeze([
   { value: "chrome", label: "Chrome" },
   { value: "edge", label: "Edge" },
-  { value: "firefox", label: "Firefox" },
-  { value: "safari", label: "Safari" }
+  { value: "firefox", label: "Firefox" }
 ]);
 
 export const USER_LEVELS = Object.freeze([
@@ -44,33 +45,27 @@ const DESKTOP = ["desktop"];
 const PHONE = ["android", "ios"];
 
 const TASKS = [
-  { id: "cuf-e3dc-edge", what: "Critical User Flows", theme: "e3dc", team: null, devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] },
-  { id: "cuf-flow-firefox", what: "Critical User Flows", theme: "flow", team: null, devices: DESKTOP, browsers: ["firefox"], users: ["owner", "installer", "partner", "service"] },
+  { id: "cuf-e3dc-desktop", what: "Critical User Flows", theme: "e3dc", team: null, devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
+  { id: "cuf-flow-desktop", what: "Critical User Flows", theme: "flow", team: null, devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
   { id: "cuf-e3dc-mobile", what: "Critical User Flows", theme: "e3dc", team: null, devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
   { id: "cuf-flow-mobile", what: "Critical User Flows", theme: "flow", team: null, devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
   { id: "af-e3dc-mobile", what: "AF Release", theme: "e3dc", team: "AF", devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
-  { id: "af-e3dc-chrome", what: "AF Release", theme: "e3dc", team: "AF", devices: DESKTOP, browsers: ["chrome"], users: ["owner", "installer", "partner", "service"] },
-  { id: "af-e3dc-edge", what: "AF Release", theme: "e3dc", team: "AF", devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] },
+  { id: "af-e3dc-desktop", what: "AF Release", theme: "e3dc", team: "AF", devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
   { id: "af-flow-mobile", what: "AF Release", theme: "flow", team: "AF", devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
-  { id: "af-flow-firefox", what: "AF Release", theme: "flow", team: "AF", devices: DESKTOP, browsers: ["firefox"], users: ["owner", "installer", "partner", "service"] },
-  { id: "af-flow-edge", what: "AF Release", theme: "flow", team: "AF", devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] },
+  { id: "af-flow-desktop", what: "AF Release", theme: "flow", team: "AF", devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
   { id: "pb-e3dc-mobile", what: "PB Release", theme: "e3dc", team: "PB", devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
-  { id: "pb-e3dc-chrome", what: "PB Release", theme: "e3dc", team: "PB", devices: DESKTOP, browsers: ["chrome"], users: ["owner", "installer", "partner", "service"] },
-  { id: "pb-e3dc-edge", what: "PB Release", theme: "e3dc", team: "PB", devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] },
+  { id: "pb-e3dc-desktop", what: "PB Release", theme: "e3dc", team: "PB", devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
   { id: "pb-flow-mobile", what: "PB Release", theme: "flow", team: "PB", devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
-  { id: "pb-flow-firefox", what: "PB Release", theme: "flow", team: "PB", devices: DESKTOP, browsers: ["firefox"], users: ["owner", "installer", "partner", "service"] },
-  { id: "pb-flow-edge", what: "PB Release", theme: "flow", team: "PB", devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] },
+  { id: "pb-flow-desktop", what: "PB Release", theme: "flow", team: "PB", devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
   { id: "cyd-e3dc-mobile", what: "CD Release", theme: "e3dc", team: "CYD", devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
-  { id: "cyd-e3dc-chrome", what: "CD Release", theme: "e3dc", team: "CYD", devices: DESKTOP, browsers: ["chrome"], users: ["owner", "installer", "partner", "service"] },
-  { id: "cyd-e3dc-edge", what: "CD Release", theme: "e3dc", team: "CYD", devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] },
+  { id: "cyd-e3dc-desktop", what: "CD Release", theme: "e3dc", team: "CYD", devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] },
   { id: "cyd-flow-mobile", what: "CD Release", theme: "flow", team: "CYD", devices: PHONE, browsers: [], users: ["owner", "installer", "partner", "service"] },
-  { id: "cyd-flow-firefox", what: "CD Release", theme: "flow", team: "CYD", devices: DESKTOP, browsers: ["firefox"], users: ["owner", "installer", "partner", "service"] },
-  { id: "cyd-flow-edge", what: "CD Release", theme: "flow", team: "CYD", devices: DESKTOP, browsers: ["edge"], users: ["owner", "installer", "partner", "service"] }
+  { id: "cyd-flow-desktop", what: "CD Release", theme: "flow", team: "CYD", devices: DESKTOP, browsers: ["chrome", "edge", "firefox"], users: ["owner", "installer", "partner", "service"] }
 ];
 
 const copyTask = (t) => ({ ...t, devices: [...t.devices], browsers: [...t.browsers], users: [...t.users] });
 
-/** The 22 default tasks, deep-frozen so nothing can change them by accident. */
+/** The 16 default tasks, deep-frozen so nothing can change them by accident. */
 export const DEFAULT_TASKS = Object.freeze(TASKS.map((t) => {
   const c = copyTask(t);
   Object.freeze(c.devices); Object.freeze(c.browsers); Object.freeze(c.users);
