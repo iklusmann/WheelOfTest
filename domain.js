@@ -254,15 +254,64 @@ export function shuffle(items, random) {
 const taskSnapshot = normalizeTask;
 
 /**
+ * One task for as many people as possible, before anything else is shared out: a maximum
+ * bipartite matching (augmenting paths; at most 30 people × 50 tasks, so it is instant).
+ * People first try their own team's tasks, then all-teams tasks; only people who can't get
+ * one that way may take another team's task. Returns Map(user_id → task).
+ */
+function oneTaskEach(tasks, people, random) {
+  const order = shuffle(tasks, random);
+  const holder = new Map();   // task id → person
+  const given = new Map();    // user_id → task
+  const ownTeam = (p, t) => t.team != null && t.team === p.team;
+  const options = (p, crossTeam) => {
+    const ok = order.filter((t) => canReceiveTask(t, p) && (crossTeam || t.team == null || ownTeam(p, t)));
+    return [...ok.filter((t) => ownTeam(p, t)), ...ok.filter((t) => !ownTeam(p, t))];
+  };
+  const augment = (p, crossTeam, seen) => {
+    for (const t of options(p, crossTeam)) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      const other = holder.get(t.id);
+      if (!other || augment(other, crossTeam, seen)) {
+        holder.set(t.id, p);
+        given.set(p.user_id, t);
+        return true;
+      }
+    }
+    return false;
+  };
+  const shuffled = shuffle(people, random);
+  for (const p of shuffled) augment(p, false, new Set());
+  for (const p of shuffled) if (!given.has(p.user_id)) augment(p, true, new Set());
+  return given;
+}
+
+/**
+ * Online people who can't get even one task with these tasks (more people than tasks, or
+ * not enough tasks for the devices they have). How many is exact; with several people in
+ * the same situation, which of them are listed is arbitrary.
+ */
+export function peopleWithoutTask(tasks, participants) {
+  const online = participants.filter((p) => p && p.online === true);
+  const given = oneTaskEach(tasks, online, () => 0.5);
+  return online.filter((p) => !given.has(p.user_id));
+}
+
+/**
  * Assign every task to an online participant.
  *
  * tasks: room tasks (current or legacy shape)
- * participants: [{ user_id, name, team, android, ios, online }]
+ * participants: [{ user_id, name, team, mac, android, ios, online }]
  * random: () => number in [0, 1)
  *
+ * 1. Everyone online gets one task first, whenever the tasks allow it (see oneTaskEach).
+ * 2. The rest: team tasks, then all-teams tasks; each goes to a compatible member of the
+ *    task's team if one is online (otherwise anyone compatible), the one with the fewest tasks.
+ *
  * Returns { ok: true, assignments } with one entry per task, in the order of `tasks`,
- * or { ok: false, error } when nobody is online. A task that needs a phone nobody online
- * has is returned unassigned with a reason.
+ * or { ok: false, error } when nobody is online. A task that needs a Mac or phone nobody
+ * online has is returned unassigned with a reason.
  */
 export function assignTasks(tasks, participants, random) {
   if (!Array.isArray(tasks) || !Array.isArray(participants)) throw new TypeError("tasks and participants must be arrays");
@@ -273,10 +322,26 @@ export function assignTasks(tasks, participants, random) {
     return { ok: false, error: "Nobody is online, so there is no one to assign tasks to.", assignments: [] };
   }
 
-  const load = new Map(online.map((p) => [p.user_id, 0]));
-  const teamTasks = shuffle(tasks.filter((t) => t.team != null), random);
-  const neutralTasks = shuffle(tasks.filter((t) => t.team == null), random);
   const byTaskId = new Map();
+  const load = new Map(online.map((p) => [p.user_id, 0]));
+  const give = (task, chosen) => {
+    load.set(chosen.user_id, load.get(chosen.user_id) + 1);
+    byTaskId.set(task.id, {
+      task_id: task.id,
+      task: taskSnapshot(task),
+      participant_id: chosen.user_id,
+      participant: { name: chosen.name, team: chosen.team, mac: Boolean(chosen.mac), android: Boolean(chosen.android), ios: Boolean(chosen.ios) },
+      team_match: task.team == null ? null : chosen.team === task.team,
+      reason: null
+    });
+  };
+
+  const people = new Map(online.map((p) => [p.user_id, p]));
+  for (const [userId, task] of oneTaskEach(tasks, online, random)) give(task, people.get(userId));
+
+  const rest = tasks.filter((t) => !byTaskId.has(t.id));
+  const teamTasks = shuffle(rest.filter((t) => t.team != null), random);
+  const neutralTasks = shuffle(rest.filter((t) => t.team == null), random);
 
   for (const task of [...teamTasks, ...neutralTasks]) {
     const candidates = online.filter((p) => canReceiveTask(task, p));
@@ -291,22 +356,11 @@ export function assignTasks(tasks, participants, random) {
       });
       continue;
     }
-
     const preferred = task.team == null ? [] : candidates.filter((p) => p.team === task.team);
     const pool = preferred.length > 0 ? preferred : candidates;
     const fewest = Math.min(...pool.map((p) => load.get(p.user_id)));
     const tied = pool.filter((p) => load.get(p.user_id) === fewest);
-    const chosen = tied[pickIndex(tied.length, random)];
-    load.set(chosen.user_id, fewest + 1);
-
-    byTaskId.set(task.id, {
-      task_id: task.id,
-      task: taskSnapshot(task),
-      participant_id: chosen.user_id,
-      participant: { name: chosen.name, team: chosen.team, mac: Boolean(chosen.mac), android: Boolean(chosen.android), ios: Boolean(chosen.ios) },
-      team_match: task.team == null ? null : chosen.team === task.team,
-      reason: null
-    });
+    give(task, tied[pickIndex(tied.length, random)]);
   }
 
   return { ok: true, error: null, assignments: tasks.map((t) => byTaskId.get(t.id)) };

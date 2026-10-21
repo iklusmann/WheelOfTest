@@ -4,7 +4,8 @@ import { CONFIG } from "./config.js";
 import { DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js";
 import {
   spinRule, tasksEditable, isDefaultTaskList, taskBrowsers,
-  hasCriticalFlows, isCriticalFlow, CRITICAL_FLOW_COUNT
+  hasCriticalFlows, isCriticalFlow, CRITICAL_FLOW_COUNT,
+  peopleWithoutTask, taskNeedsMac, taskPhones
 } from "./domain.js";
 import { drawWheel } from "./reveal.js";
 
@@ -19,7 +20,7 @@ export const els = {
   formError: $("form-error"), formSubmit: $("form-submit"),
   viewRoom: $("view-room"), roomHeading: $("room-heading"), roomAlert: $("room-alert"),
   wheelArea: $("wheel-area"), wheelStage: $("wheel-stage"), wheelRotor: $("wheel-rotor"),
-  spinBtn: $("spin-btn"), wheelStatus: $("wheel-status"),
+  spinBtn: $("spin-btn"), wheelStatus: $("wheel-status"), wheelWarning: $("wheel-warning"),
   resultArea: $("result-area"), resultTitle: $("result-title"), myCount: $("my-count"),
   mineOnly: $("mine-only"), showFirstWrap: $("show-first-wrap"), showFirst: $("show-first"),
   viewingFirst: $("viewing-first"), resultTable: $("result-table"), resultBody: $("result-body"), resultEmpty: $("result-empty"),
@@ -686,6 +687,7 @@ function renderStage(state) {
   if (state.revealing) {
     els.spinBtn.hidden = true;
     els.wheelStatus.textContent = "Spinning…";
+    els.wheelWarning.hidden = true;
     return;
   }
   if (state.stageSpin === 0) {
@@ -716,18 +718,48 @@ function renderWheelArea(state) {
   els.spinBtn.hidden = !isHost;
   if (!isHost) {
     els.wheelStatus.textContent = "Waiting for the moderator to spin";
+    els.wheelWarning.hidden = true;
     return;
   }
   const rule = spinRule(snap.room, snap.complaints.length, CONFIG.complaintThreshold);
   const ready = moderatorCanAct(state);
   els.spinBtn.disabled = !(ready && rule.allowed);
   els.spinBtn.textContent = state.busy === "spin" ? "Spinning…" : "Spin";
-  els.wheelStatus.textContent = moderatorStatus(state) ?? (() => {
+  const status = moderatorStatus(state);
+  els.wheelStatus.textContent = status ?? (() => {
     const online = snap.participants.filter((p) => isOnline(state, p.user_id)).length;
     return online === snap.participants.length
       ? `Everyone is online. ${plural(snap.room.tasks.length, "task")} will be shared out.`
       : `${online} of ${snap.participants.length} people are online. Only people online get tasks.`;
   })();
+  // Only once we know who is online; otherwise the count would be a guess.
+  const warning = status === null ? coverageWarning(state) : null;
+  els.wheelWarning.hidden = !warning;
+  els.wheelWarning.textContent = warning ?? "";
+}
+
+const countPeople = (n) => (n === 1 ? "1 person" : `${n} people`);
+
+/** Tell the moderator before spinning when not everyone online can get a task. */
+function coverageWarning(state) {
+  const { room, participants } = state.snapshot;
+  const roster = participants.map((p) => ({ ...p, online: isOnline(state, p.user_id) }));
+  const online = roster.filter((p) => p.online);
+  const missing = peopleWithoutTask(room.tasks, roster).length;
+  if (missing === 0) return null;
+  const who = `${missing} of the ${countPeople(online.length)} online won't get a task`;
+  if (online.length > room.tasks.length) {
+    return `${who}: there are only ${plural(room.tasks.length, "task")}. Add tasks so everyone gets one.`;
+  }
+  const desktopOnly = online.filter((p) => !p.mac && !p.android && !p.ios).length;
+  const forAnyone = room.tasks.filter((t) => !taskNeedsMac(t) && taskPhones(t).length === 0).length;
+  const why = desktopOnly > forAnyone
+    ? `${countPeople(desktopOnly)} only ${desktopOnly === 1 ? "has" : "have"} Desktop, and only ${plural(forAnyone, "task")} can go to anyone`
+    : "there aren't enough tasks for the devices people have";
+  const fix = hasCriticalFlows(room.tasks)
+    ? "Add tasks, or ask people to turn on the Mac and phones they have."
+    : "Turn Critical User Flows on, add tasks, or ask people to turn on the Mac and phones they have.";
+  return `${who}: ${why}. ${fix}`;
 }
 
 function moderatorStatus(state) {
@@ -747,6 +779,7 @@ export function prepareReveal(state) {
   drawWheelFor(state);
   els.spinBtn.hidden = true;
   els.wheelStatus.textContent = "Spinning…";
+  els.wheelWarning.hidden = true;
 }
 
 export function revealElements() {

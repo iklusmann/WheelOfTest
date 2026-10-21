@@ -396,6 +396,8 @@ input:disabled + .switch { opacity: 0.5; }
 
 .wheel-actions { display: grid; justify-items: center; gap: 12px; text-align: center; }
 .wheel-status { color: var(--label-2); font-size: 15px; max-width: 44ch; }
+.notice-warn { background: var(--orange-tint); }
+.wheel-warning { max-width: 52ch; text-align: left; }
 
 /* burst */
 .burst { position: absolute; inset: 0; z-index: 4; pointer-events: none; }

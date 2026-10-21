@@ -30,7 +30,7 @@ import {
   normalizeTask, taskPhones, unassignedReason, validateTask, validateTaskList,
   newTaskId, sameTaskList, isDefaultTaskList, tasksEditable,
   taskNeedsMac, taskBrowsers, UNASSIGNED_NO_MAC,
-  withCriticalFlows, hasCriticalFlows, CRITICAL_FLOW_COUNT
+  withCriticalFlows, hasCriticalFlows, CRITICAL_FLOW_COUNT, peopleWithoutTask
 } from "./domain.js";
 import { DEFAULT_TASKS as TASKS, defaultTasks, DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js";
 
@@ -57,6 +57,34 @@ const MOBILE = TASKS.filter(isMobile);
 const MAC = TASKS.filter((t) => taskNeedsMac(t));
 const DESKTOP = TASKS.filter((t) => !isMobile(t) && !taskNeedsMac(t));   // anyone can take these
 const ALL_DEVICES = { mac: true, android: true, ios: true };
+
+// Independent oracle: the most people that can get at least one task each (max flow / BFS
+// augmenting paths), optionally only over "preferred" edges (own team or all-teams tasks).
+function maxCover(tasks, people, edge = canReceiveTask) {
+  const adj = people.map((p) => tasks.map((t, j) => (edge(t, p) ? j : -1)).filter((j) => j >= 0));
+  const owner = new Array(tasks.length).fill(-1);
+  let size = 0;
+  for (let s = 0; s < people.length; s += 1) {
+    const prevTask = new Map(), prevPerson = new Map([[s, -1]]);
+    const queue = [s];
+    let end = -1;
+    while (queue.length && end < 0) {
+      const p = queue.shift();
+      for (const j of adj[p]) {
+        if (prevTask.has(j)) continue;
+        prevTask.set(j, p);
+        if (owner[j] < 0) { end = j; break; }
+        if (!prevPerson.has(owner[j])) { prevPerson.set(owner[j], j); queue.push(owner[j]); }
+      }
+    }
+    if (end < 0) continue;
+    size += 1;
+    for (let j = end; j >= 0;) { const p = prevTask.get(j); const next = prevPerson.get(p); owner[j] = p; j = next; }
+  }
+  return size;
+}
+const preferredEdge = (t, p) => canReceiveTask(t, p) && (t.team == null || t.team === p.team);
+const withTask = (result, people) => people.filter((p) => result.assignments.some((a) => a.participant_id === p.user_id));
 const byId = (list) => new Map(list.map((x) => [x.user_id, x]));
 function assignedTo(result, userId) { return result.assignments.filter((a) => a.participant_id === userId); }
 function loads(result, people) {
@@ -269,6 +297,9 @@ test("property check over 500 random custom task lists: device rule, team rule, 
     const online = roster.filter((p) => p.online);
     if (online.length === 0) { equal(r.ok, false, `seed ${seed} empty`); continue; }
     equal(r.assignments.map((a) => a.task_id), tasks.map((t) => t.id), `seed ${seed}: every task once, in order`);
+    equal(withTask(r, online).length, maxCover(tasks, online), `seed ${seed}: as many people as possible get a task`);
+    // Team preference is strict whenever everyone can get a task within their own team
+    const keepsTeams = maxCover(tasks, online, preferredEdge) === online.length;
     const people = byId(roster);
     for (const a of r.assignments) {
       const compatible = online.filter((p) => canReceiveTask(a.task, p));
@@ -279,7 +310,7 @@ test("property check over 500 random custom task lists: device rule, team rule, 
       }
       const p = people.get(a.participant_id);
       assert(p.online && canReceiveTask(a.task, p), `seed ${seed}: device rule broken on ${a.task_id}`);
-      if (a.task.team) equal(p.team === a.task.team, compatible.some((c) => c.team === a.task.team), `seed ${seed}: team rule on ${a.task_id}`);
+      if (a.task.team && keepsTeams) equal(p.team === a.task.team, compatible.some((c) => c.team === a.task.team), `seed ${seed}: team rule on ${a.task_id}`);
     }
   }
 });
@@ -613,6 +644,82 @@ test("random sources returning edge values (0, 0.9999999, 1) never break assignm
   }
 });
 
+// ---------------------------------------------------------------- everyone gets a task
+function mixedRoster(random, size, { desktopOnlyShare = 0.25 } = {}) {
+  const teams = ["AF", "CYD", "PB"];
+  return Array.from({ length: size }, (_, i) => {
+    const desktopOnly = random() < desktopOnlyShare;
+    const d = random();
+    return person(i === 0 ? "Moderator" : `P${i}`, teams[Math.floor(random() * 3)], desktopOnly ? {} : {
+      mac: random() < 0.35, android: d < 0.5, ios: d > 0.4
+    });
+  });
+}
+
+test("everyone online gets a task whenever the tasks allow it (800 rooms of 1–30 people)", () => {
+  for (let seed = 1; seed <= 800; seed += 1) {
+    const random = seededRandom(seed * 101);
+    const roster = mixedRoster(random, 1 + Math.floor(random() * 30));
+    const tasks = random() < 0.35 ? withCriticalFlows(defaultTasks(), false) : defaultTasks();
+    const r = assignTasks(tasks, roster, random);
+    const best = maxCover(tasks, roster);
+    equal(withTask(r, roster).length, best, `seed ${seed}: ${roster.length} people, best ${best}`);
+    equal(peopleWithoutTask(tasks, roster).length, roster.length - best, `seed ${seed}: warning count`);
+    assert(r.assignments.every((a) => a.participant_id === null || canReceiveTask(a.task, byId(roster).get(a.participant_id))), "device rule");
+  }
+});
+
+test("18 people, mixed devices: everyone gets a task, the moderator too; with Critical User Flows off one can't", () => {
+  const roster = [
+    person("Moderator", "AF"), person("A2", "AF"), person("A3", "AF", { android: true }), person("A4", "AF", { ios: true }),
+    person("A5", "AF", { mac: true }), person("A6", "AF"),
+    person("C1", "CYD", { android: true, ios: true }), person("C2", "CYD"), person("C3", "CYD", { mac: true, ios: true }),
+    person("C4", "CYD", { android: true }), person("C5", "CYD"), person("C6", "CYD", { ios: true }),
+    person("P1", "PB", { mac: true }), person("P2", "PB", { android: true }), person("P3", "PB"),
+    person("P4", "PB", { ios: true }), person("P5", "PB", { android: true, ios: true }), person("P6", "PB")
+  ];
+  // 7 of them only have Desktop. All 32 tasks: 8 can go to anyone, so everyone can get one.
+  equal(maxCover(TASKS, roster), 18, "a fair split exists with all 32 tasks");
+  equal(peopleWithoutTask(TASKS, roster).length, 0, "no warning");
+  for (let seed = 1; seed <= 300; seed += 1) {
+    const r = assignTasks(TASKS, roster, seededRandom(seed));
+    const counts = roster.map((p) => assignedTo(r, p.user_id).length);
+    assert(counts.every((n) => n >= 1), `seed ${seed}: someone got nothing: ${counts}`);
+    equal(r.assignments.filter((a) => a.participant_id === null).length, 0, "every task assigned");
+  }
+  // Critical User Flows off: only 6 tasks can go to anyone, for 7 Desktop-only people.
+  const fewer = withCriticalFlows(defaultTasks(), false);
+  equal(peopleWithoutTask(fewer, roster).length, 1, "the warning counts exactly one");
+  for (let seed = 1; seed <= 100; seed += 1) {
+    equal(withTask(assignTasks(fewer, roster, seededRandom(seed)), roster).length, 17, `seed ${seed}: 17 of 18 covered`);
+  }
+});
+
+test("the room that left two Desktop-only testers without a task now covers everyone", () => {
+  // Found by simulation with the previous version (Critical User Flows off): P3 and P4 got 0.
+  const roster = [
+    person("Moderator", "CYD", { mac: true }), person("P1", "PB"), person("P2", "CYD", { android: true }),
+    person("P3", "CYD"), person("P4", "CYD"), person("P5", "AF", { ios: true }),
+    person("P6", "AF", { android: true, ios: true }), person("P7", "CYD", { mac: true })
+  ];
+  const tasks = withCriticalFlows(defaultTasks(), false);
+  for (let seed = 1; seed <= 300; seed += 1) {
+    const r = assignTasks(tasks, roster, seededRandom(seed));
+    assert(roster.every((p) => assignedTo(r, p.user_id).length >= 1), `seed ${seed}`);
+  }
+});
+
+test("when not everyone can get a task, as many as possible do and peopleWithoutTask says how many", () => {
+  const roster = Array.from({ length: 10 }, (_, i) => person(`D${i}`, ["AF", "CYD", "PB"][i % 3]));  // Desktop only
+  equal(DESKTOP.length, 8, "8 tasks anyone can take");
+  equal(peopleWithoutTask(TASKS, roster).length, 2, "2 of 10 can't get one");
+  for (let seed = 1; seed <= 50; seed += 1) {
+    equal(withTask(assignTasks(TASKS, roster, seededRandom(seed)), roster).length, 8, `seed ${seed}: 8 covered`);
+  }
+  equal(peopleWithoutTask(TASKS.slice(0, 3), [person("x", "AF", ALL_DEVICES), person("y", "AF", ALL_DEVICES), person("z", "AF", ALL_DEVICES), person("w", "AF", ALL_DEVICES)]).length, 1, "more people than tasks");
+  equal(peopleWithoutTask(TASKS, [person("off", "AF", { online: false })]).length, 0, "offline people aren't counted");
+});
+
 // ---------------------------------------------------------------- property check
 test("property check over 500 random rosters: phone rule, team rule, offline rule", () => {
   for (let seed = 1; seed <= 500; seed += 1) {
@@ -621,6 +728,8 @@ test("property check over 500 random rosters: phone rule, team rule, offline rul
     const r = assignTasks(TASKS, roster, random);
     const online = roster.filter((p) => p.online);
     if (online.length === 0) { equal(r.ok, false, `seed ${seed} empty`); continue; }
+    const keepsTeams = maxCover(TASKS, online, preferredEdge) === online.length;
+    equal(withTask(r, online).length, maxCover(TASKS, online), `seed ${seed}: as many people as possible get a task`);
     const people = byId(roster);
     for (const a of r.assignments) {
       const compatible = online.filter((p) => canReceiveTask(a.task, p));
@@ -633,7 +742,7 @@ test("property check over 500 random rosters: phone rule, team rule, offline rul
       assert(canReceiveTask(a.task, p), `seed ${seed}: phone rule broken on ${a.task_id}`);
       if (a.task.team) {
         const ownTeamAvailable = compatible.some((c) => c.team === a.task.team);
-        equal(p.team === a.task.team, ownTeamAvailable, `seed ${seed}: team rule on ${a.task_id}`);
+        if (keepsTeams) equal(p.team === a.task.team, ownTeamAvailable, `seed ${seed}: team rule on ${a.task_id}`);
         equal(a.team_match, p.team === a.task.team, "team_match value");
       }
       equal(a.participant.name, p.name, "participant snapshot");
