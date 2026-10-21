@@ -1,8 +1,11 @@
 // DOM rendering for both views. User-supplied text is always set with textContent.
 
 import { CONFIG } from "./config.js";
-import { DEVICES, BROWSERS, USER_LEVELS, THEMES } from "./tasks.js";
-import { spinRule, tasksEditable, isDefaultTaskList } from "./domain.js";
+import { DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js";
+import {
+  spinRule, tasksEditable, isDefaultTaskList, taskBrowsers,
+  hasCriticalFlows, isCriticalFlow, CRITICAL_FLOW_COUNT
+} from "./domain.js";
 import { drawWheel } from "./reveal.js";
 
 const $ = (id) => document.getElementById(id);
@@ -32,7 +35,7 @@ export const els = {
   taskTeamChips: $("task-team-chips"), taskTeamError: $("task-team-error"),
   taskThemeChips: $("task-theme-chips"), taskThemeError: $("task-theme-error"),
   taskDevicesChips: $("task-devices-chips"), taskDevicesError: $("task-devices-error"),
-  taskBrowsersChips: $("task-browsers-chips"), taskUsersChips: $("task-users-chips"),
+  taskBrowsersChips: $("task-browsers-chips"), taskUsersChips: $("task-users-chips"), taskBrowsersGroup: $("task-browsers"),
   taskFormError: $("task-form-error"), taskCancel: $("task-cancel"), taskSave: $("task-save"),
   announcer: $("announcer")
 };
@@ -50,6 +53,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const ICONS = {
   phone: "M8.5 2.5h7a2 2 0 0 1 2 2v15a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-15a2 2 0 0 1 2-2Zm2.5 16h2",
   desktop: "M3.5 4.5h17v11h-17zM8.5 20h7M12 15.5V20",
+  laptop: "M5 6.5a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v9H5zM2.5 15.5h19l-1.2 2.3a1 1 0 0 1-.9.5H4.6a1 1 0 0 1-.9-.5z",
   globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3.5 12h17M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9s1.2-6.5 3.6-9Z",
   person: "M12 11.5a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5ZM4.75 20.25c.9-3.4 3.75-5.25 7.25-5.25s6.35 1.85 7.25 5.25",
   pencil: "M14.5 5.5l4 4M4.5 19.5l1-4.5L16 4.5a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L9 18.5l-4.5 1Z",
@@ -59,6 +63,9 @@ const ICONS = {
 const labelIn = (options, value) => options.find((o) => o.value === value)?.label ?? value;
 const labelsIn = (options, values) => values.map((v) => labelIn(options, v));
 const PHONE_VALUES = ["android", "ios"];
+const BROWSER_LABELS = [...BROWSERS, MAC_BROWSER];  // Safari isn't an option, but Mac tasks show it
+/** "Chrome, Edge, Firefox, Safari": the browsers a task is tested in (Safari comes with Mac). */
+const browsersText = (t, joiner = ", ") => labelsIn(BROWSER_LABELS, taskBrowsers(t)).join(joiner);
 // Filled circle + glyph, in the style of SF Symbols' *.circle.fill
 const STATUS_GLYPHS = {
   check: "M6.2 10.3l2.6 2.6 5-5.6",
@@ -161,6 +168,7 @@ export function renderForm({ mode, code = null, profile = null }) {
   if (profile) {
     form.elements.name.value = profile.name ?? "";
     for (const radio of form.querySelectorAll('input[name="team"]')) radio.checked = radio.value === profile.team;
+    form.elements.mac.checked = profile.mac === true;
     form.elements.android.checked = profile.android === true;
     form.elements.ios.checked = profile.ios === true;
   }
@@ -176,6 +184,7 @@ export function readForm() {
   return {
     name: form.elements.name.value,
     team: team ? team.value : null,
+    mac: form.elements.mac.checked,
     android: form.elements.android.checked,
     ios: form.elements.ios.checked
   };
@@ -207,7 +216,7 @@ export function setFormBusy(busy, label) {
 /** "Critical User Flows, E3DC, Android and iOS" — for button labels and announcements. */
 export function describeTask(t) {
   const parts = [t.what, labelIn(THEMES, t.theme), labelsIn(DEVICES, t.devices).join(" and ")];
-  if (t.browsers.length) parts.push(labelsIn(BROWSERS, t.browsers).join(" and "));
+  if (taskBrowsers(t).length) parts.push(browsersText(t));
   return parts.join(", ");
 }
 
@@ -242,11 +251,11 @@ function taskRow(t, { editable, busy, lastOne }) {
   title.append(el("span", "task-name", t.what), el("span", "tag tag-theme", labelIn(THEMES, t.theme)));
 
   const meta = el("div", "task-meta");
-  const computers = t.devices.filter((d) => !PHONE_VALUES.includes(d));
-  if (computers.length) meta.append(metaItem("desktop", labelsIn(DEVICES, computers).join(", ")));
+  if (t.devices.includes("desktop")) meta.append(metaItem("desktop", "Desktop"));
+  if (t.devices.includes("mac")) meta.append(metaItem("laptop", "Mac"));
   const phones = t.devices.filter((d) => PHONE_VALUES.includes(d));
   if (phones.length) meta.append(metaItem("phone", labelsIn(DEVICES, phones).join(", ")));
-  if (t.browsers.length) meta.append(metaItem("globe", labelsIn(BROWSERS, t.browsers).join(", ")));
+  if (taskBrowsers(t).length) meta.append(metaItem("globe", browsersText(t)));
   if (t.users.length) meta.append(metaItem("person", labelsIn(USER_LEVELS, t.users).join(", ")));
   main.append(title, meta);
   li.append(main);
@@ -314,6 +323,17 @@ function renderTaskTools(tools, tasks, busy) {
   reset.disabled = busy || isDefault;
   reset.title = isDefault ? "These are already the default tasks." : "";
   if (reset.disabled) disarm(reset);
+
+  // Critical User Flows switch: on while the block is in the list
+  const cuf = tools.querySelector('[data-toggle="critical-flows"]');
+  const on = hasCriticalFlows(tasks);
+  const wouldEmpty = on && tasks.every(isCriticalFlow);
+  const wouldOverflow = !on && tasks.length + CRITICAL_FLOW_COUNT > CONFIG.maxTasks;
+  cuf.checked = on;
+  cuf.disabled = busy || wouldEmpty || wouldOverflow;
+  cuf.closest("label").title = wouldEmpty ? "A room needs at least one task."
+    : wouldOverflow ? `A room can have at most ${CONFIG.maxTasks} tasks.`
+    : on ? `Turn off to leave out the ${CRITICAL_FLOW_COUNT} Critical User Flows tasks.` : "Turn on to add the Critical User Flows tasks.";
 }
 
 /** The task section of the create form. */
@@ -343,6 +363,13 @@ export function focusTask(scope, taskId, action = "edit") {
   const fallback = tools.querySelector('[data-action="add"]');
   const node = target && !target.disabled ? target : fallback && !fallback.disabled && !tools.hidden ? fallback : null;
   node?.focus();
+}
+
+/** Put focus back on the Critical User Flows switch (it is briefly disabled while a room save runs). */
+export function focusCriticalFlows(scope) {
+  const tools = scope === "draft" ? els.formTaskTools : els.roomTaskTools;
+  const input = tools.querySelector('[data-toggle="critical-flows"]');
+  if (input && !input.disabled && !tools.hidden) input.focus();
 }
 
 // ---- two-step confirm for Delete and Reset
@@ -411,7 +438,7 @@ function addExtraChips(task) {
   const add = (container, type, name, options, values) => {
     for (const value of values) {
       if (!value || options.includes(value)) continue;
-      const extra = chip(type, name, value, value);
+      const extra = chip(type, name, value, name === "browsers" ? labelIn(BROWSER_LABELS, value) : value);
       extra.classList.add("chip-extra");
       container.append(extra);
     }
@@ -435,7 +462,7 @@ export function openTaskEditor({ task, isNew }) {
     const value = input.name === "team" ? task.team ?? "" : task[input.name];
     input.checked = Array.isArray(value) ? value.includes(input.value) : value === input.value;
   }
-  syncSelectAll();
+  syncTaskForm({ fillBrowsers: false });
   setTaskFormErrors({}, { focus: false });
   setTaskFormError(null);
   setTaskFormBusy(false);
@@ -449,10 +476,6 @@ export function openTaskEditor({ task, isNew }) {
  * selected it dims (aria-disabled, so it keeps keyboard focus instead of dropping it).
  */
 export function syncSelectAll() {
-  const picked = new Set(Array.from(els.taskForm.querySelectorAll('input[name="devices"]:checked'), (i) => i.value));
-  const macOnly = picked.has("mac") && !picked.has("desktop");
-  els.taskBrowsersChips.closest("fieldset").disabled = macOnly;
-  if (macOnly) for (const input of els.taskBrowsersChips.querySelectorAll("input")) input.checked = false;
   for (const button of els.taskForm.querySelectorAll("[data-select-all]")) {
     const inputs = Array.from(els.taskForm.querySelectorAll(`input[name="${button.dataset.selectAll}"]`));
     const all = inputs.length > 0 && inputs.every((i) => i.checked);
@@ -461,12 +484,32 @@ export function syncSelectAll() {
   }
 }
 
+/**
+ * Keep the editor consistent after any change: browsers only apply to Desktop, so the group
+ * is disabled without it (the selection is kept for when Desktop comes back). When Desktop is
+ * turned on and no browser is selected, every browser is selected, like on a new task.
+ * fillBrowsers: false when opening a task, so it shows exactly what was saved.
+ */
+export function syncTaskForm({ fillBrowsers = true } = {}) {
+  const desktop = els.taskForm.querySelector('input[name="devices"][value="desktop"]');
+  const on = Boolean(desktop?.checked);
+  const turnedOn = on && els.taskBrowsersGroup.disabled;
+  els.taskBrowsersGroup.disabled = !on;
+  const browsers = Array.from(els.taskBrowsersChips.querySelectorAll("input"));
+  if (fillBrowsers && turnedOn && !browsers.some((i) => i.checked)) {
+    for (const input of browsers) if (BROWSERS.some((o) => o.value === input.value)) input.checked = true;
+  }
+  syncSelectAll();
+  // A control in a fieldset's first <legend> isn't disabled with the fieldset, so do it here.
+  els.taskForm.querySelector('[data-select-all="browsers"]').disabled = !on;
+}
+
 /** Select every option in a group (including values only this task has). Returns false if nothing changed. */
 export function selectAllChips(name) {
   const inputs = Array.from(els.taskForm.querySelectorAll(`input[name="${name}"]`));
   if (inputs.every((i) => i.checked)) return false;
   for (const input of inputs) input.checked = true;
-  syncSelectAll();
+  syncTaskForm();  // e.g. the Devices + turns Desktop on, which enables (and fills) Browsers
   const label = els.taskForm.querySelector(`[data-select-all="${name}"]`)?.getAttribute("aria-label").replace(/^Select all /, "");
   announce(`All ${label} selected.`);
   return true;
@@ -621,12 +664,14 @@ function renderPeople(state) {
     const badge = el("span", "team-badge", p.team);
     badge.dataset.team = p.team;
     meta.append(badge);
+    // Desktop always, then whichever of Mac / Android / iOS the tester has
     const devices = el("span", "devices");
-    if (p.android || p.ios) {
-      if (p.android) { const d = el("span", "device"); d.append(icon("phone"), document.createTextNode("Android")); devices.append(d); }
-      if (p.ios) { const d = el("span", "device"); d.append(icon("phone"), document.createTextNode("iOS")); devices.append(d); }
-    } else {
-      const d = el("span", "device device-none"); d.append(icon("desktop"), document.createTextNode("Desktop only")); devices.append(d);
+    const owned = [["desktop", "Desktop", true], ["laptop", "Mac", p.mac], ["phone", "Android", p.android], ["phone", "iOS", p.ios]];
+    for (const [iconName, label, has] of owned) {
+      if (!has) continue;
+      const d = el("span", "device");
+      d.append(icon(iconName), document.createTextNode(label));
+      devices.append(d);
     }
     meta.append(devices);
     li.append(avatar, top, presence, meta);
@@ -775,7 +820,7 @@ function resultRow(a, me) {
     cell("Task", what, "c-what"),
     cell("Theme", labelIn(THEMES, t.theme)),
     cell("Devices", labelsIn(DEVICES, t.devices).join(", ")),
-    cell("Browsers", t.browsers.length ? labelsIn(BROWSERS, t.browsers).join(", ") : "—"),
+    cell("Browsers", taskBrowsers(t).length ? browsersText(t) : "—"),
     cell("Task team", t.team ?? "Any"),
     cell("Assigned to", assignee, "c-assignee"),
     cell("Their team", a.participant ? a.participant.team : "—"),

@@ -1,10 +1,11 @@
 // Bootstrap, routing by ?room=, and wiring between domain, backend, UI and reveal.
 
 import { CONFIG, isConfigured } from "./config.js";
-import { THEMES, BROWSERS, defaultTasks } from "./tasks.js";
+import { THEMES, BROWSERS, USER_LEVELS, defaultTasks } from "./tasks.js";
 import {
   validateProfile, normalizeRoomCode, assignTasks, spinRule,
-  normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable
+  normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable,
+  withCriticalFlows, CRITICAL_FLOW_COUNT
 } from "./domain.js";
 import * as backend from "./backend.js";
 import * as ui from "./ui.js";
@@ -383,7 +384,11 @@ let editorReturn = null;  // what to focus once the editor has closed: { scope, 
 let editorOpener = null;  // the button that opened the editor (the browser returns focus there on close)
 
 const currentTasks = (scope) => (scope === "draft" ? state.draftTasks : state.snapshot?.room.tasks ?? []);
-const blankTask = () => ({ what: "", theme: THEMES[0].value, team: null, devices: ["desktop"], browsers: BROWSERS.map((b) => b.value), users: [] });
+// A new task starts like the defaults: Desktop, every browser, every user level.
+const blankTask = () => ({
+  what: "", theme: THEMES[0].value, team: null, devices: ["desktop"],
+  browsers: BROWSERS.map((o) => o.value), users: USER_LEVELS.map((o) => o.value)
+});
 
 function renderDraft() {
   ui.renderFormTasks({ tasks: state.draftTasks, open: state.draftOpen });
@@ -534,6 +539,40 @@ async function resetTasks(scope) {
   }
 }
 
+/** The Critical User Flows switch: leave the whole block out, or put the default one back. */
+async function setCriticalFlows(scope, on) {
+  const tasks = currentTasks(scope);
+  const next = withCriticalFlows(tasks, on);
+  if (next === tasks || !validateTaskList(next).ok) {
+    if (scope === "draft") renderDraft(); else render();  // put the switch back where it was
+    return;
+  }
+  const message = on
+    ? `Added the ${CRITICAL_FLOW_COUNT} Critical User Flows tasks.`
+    : `Left out the ${tasks.length - next.length} Critical User Flows tasks.`;
+  if (scope === "draft") {
+    state.draftTasks = next;
+    renderDraft();
+    ui.announce(message);
+    return;
+  }
+  const outcome = await saveRoomTasks(next);
+  if (outcome.ok) {
+    ui.announce(message);
+  } else if (!outcome.stale && !state.alert) {
+    state.alert = `Couldn't update the tasks: ${outcome.error}`;
+    render();
+  }
+  ui.focusCriticalFlows("room");
+}
+
+function onTaskAreaChange(scope) {
+  return (event) => {
+    const input = event.target.closest('[data-toggle="critical-flows"]');
+    if (input) setCriticalFlows(scope, input.checked);
+  };
+}
+
 /** Add / Edit / Delete / Reset buttons in either task list (event delegation). */
 function onTaskAreaClick(scope) {
   return (event) => {
@@ -571,12 +610,22 @@ ui.els.showFirst.addEventListener("change", () => { state.showFirst = ui.els.sho
 ui.els.formTasksToggle.addEventListener("click", () => { state.draftOpen = !state.draftOpen; renderDraft(); });
 ui.els.formTasks.addEventListener("click", onTaskAreaClick("draft"));
 ui.els.roomTasks.addEventListener("click", onTaskAreaClick("room"));
+ui.els.formTasks.addEventListener("change", onTaskAreaChange("draft"));
+// The create form's Critical User Flows switch sits inside the profile form: Enter toggles it
+// instead of submitting the form (which would create the room).
+ui.els.formTasks.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && event.target.matches?.('[data-toggle="critical-flows"]')) {
+    event.preventDefault();
+    if (!event.target.disabled) event.target.click();
+  }
+});
+ui.els.roomTasks.addEventListener("change", onTaskAreaChange("room"));
 ui.els.taskForm.addEventListener("submit", onTaskFormSubmit);
 ui.els.taskForm.addEventListener("click", (event) => {
   const button = event.target.closest("[data-select-all]");
   if (button && button.getAttribute("aria-disabled") !== "true" && !ui.taskEditorBusy()) ui.selectAllChips(button.dataset.selectAll);
 });
-ui.els.taskForm.addEventListener("change", () => ui.syncSelectAll());
+ui.els.taskForm.addEventListener("change", () => ui.syncTaskForm());
 ui.els.taskCancel.addEventListener("click", () => closeEditor());
 ui.els.taskDialog.addEventListener("cancel", (event) => { if (ui.taskEditorBusy()) event.preventDefault(); });
 ui.els.taskDialog.addEventListener("close", onEditorClosed);

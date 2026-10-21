@@ -1,6 +1,6 @@
 # WheelOfTest
 
-A small QA task roulette for one team. People join a room through a link, the moderator spins the wheel once, and every test task gets an owner. Each room starts with the 16 default tasks, and the moderator can edit, add or delete tasks for that room until the first spin. If at least two people complain, the moderator can run one final spin.
+A small QA task roulette for one team. People join a room through a link, the moderator spins the wheel once, and every test task gets an owner. Each room starts with the 32 default tasks, and the moderator can edit, add or delete tasks for that room until the first spin. Testers say which devices they have (Desktop always, plus Mac, Android, iOS), and each task only goes to someone who has its device. If at least two people complain, the moderator can run one final spin.
 
 Static site (HTML, CSS, vanilla ES modules, no build step) on GitHub Pages, with Supabase for the room database, anonymous auth and realtime.
 
@@ -22,7 +22,7 @@ tests.html  supabase/schema.sql  .github/workflows/deploy.yml
 
 Open **SQL Editor**, paste all of `supabase/schema.sql`, and run it. It creates the four tables with constraints, enables RLS, revokes the default client grants, creates the RPCs, and adds `rooms` to the `supabase_realtime` publication. It is safe to run again.
 
-**Upgrading from the version without editable tasks:** run `schema.sql` again, then deploy the new frontend straight away. Existing rooms keep working: their tasks are stored in the old shape (`platform`/`device`), and both the database and the app still read it. Anyone who has the old page open should reload, because the old page sends tasks in a shape the new schema no longer accepts.
+**Upgrading from an earlier version:** run `schema.sql` again, then deploy the new frontend straight away. It adds a `mac` column to `participants` (existing people get `false`) and replaces the task and spin functions. Existing rooms keep working: rooms from before tasks were editable store tasks in the old shape (`platform`/`device`), and both the database and the app still read it. Anyone who has an old page open should reload.
 
 ### 3. Configure the frontend
 
@@ -62,11 +62,22 @@ All paths are relative, so the site works at `https://USERNAME.github.io/REPOSIT
 
 ## Tasks
 
-The 16 default tasks live in `tasks.js` (`DEFAULT_TASKS`). They never change at runtime: every new room starts from a fresh copy, and edits only ever apply to that one room.
+The 32 default tasks live in `tasks.js` (`DEFAULT_TASKS`): every release (Critical User Flows, AF, PB, CD) × theme (E3DC, Flow) × device (Desktop, Mac, Android, iOS). Each tester covers every browser and every user level of a task, so there is one task per device instead of one per browser:
 
-Each task has a **name**, one **team** (or **All teams**), a **theme**, and three sets of options you select or deselect: **devices** (Desktop, Mac, Android, iOS; at least one), **browsers** (Chrome, Edge, Firefox) and **user levels** (both optional). Mac always means Safari: with Mac selected and Desktop not, the browsers are locked. The default desktop tasks have all browsers selected, and so does a new task. The **+** beside each of those three labels selects every option in the group (it greys out once everything is selected). The option lists are also in `tasks.js`.
+| Device | Browsers shown | Who can take it |
+| --- | --- | --- |
+| Desktop | Chrome, Edge, Firefox | anyone |
+| Mac | Safari (automatic) | someone with a Mac |
+| Android | none (the app) | someone with Android |
+| iOS | none (the app) | someone with iOS |
 
-- **On the Create room screen**, the task section shows "16 tasks · default set". **Review** opens the list, grouped by team. You can edit, delete, add, or reset to the defaults before creating the room. These are local until you click **Create room**.
+All four user levels (Owner, Installer, Partner, Service) are on every task. The defaults never change at runtime: every new room starts from a fresh copy, and edits only ever apply to that one room.
+
+**Critical User Flows is optional.** The **Critical User Flows** switch next to Add task / Reset leaves all 8 of them out (including any you edited) or puts the defaults back. It's on the create form and in the moderator's lobby view.
+
+Each task has a **name**, one **team** (or **All teams**), a **theme**, and three sets of options you select or deselect: **devices** (Desktop, Mac, Android, iOS; at least one), **browsers** (Chrome, Edge, Firefox; they apply to Desktop, so the group is disabled without it) and **user levels**. A new task starts with Desktop, every browser and every user level selected. The **+** beside each of those three labels selects every option in the group (it greys out once everything is selected). Safari is not a browser option: selecting Mac means Safari.
+
+- **On the Create room screen**, the task section shows "32 tasks · default set". **Review** opens the list, grouped by team. You can edit, delete, add, switch Critical User Flows off, or reset to the defaults before creating the room. These are local until you click **Create room**.
 - **In the room, before the first spin**, everyone sees the task list. Only the moderator can change it, and changes reach everyone immediately through the same realtime update the room already uses. The wheel status shows the new count.
 - **After the first spin** the list is locked (the database refuses `update_tasks` with `tasks_locked`) and the result table shows the tasks.
 - Delete and Reset need a second press within 4 seconds, so a stray click can't remove anything. A room always keeps at least one task, and at most 50.
@@ -80,13 +91,13 @@ When the moderator clicks **Spin**, their browser runs `assignTasks` from `domai
 1. Only people who are **online** right now (Realtime Presence) are considered. The moderator always counts as online.
 2. Team tasks are shuffled and assigned first, then the "All teams" tasks, so those even out the load at the end.
 3. For each task:
-   - **Phone rule (absolute):** if a task has Android and/or iOS selected, it can only go to someone with **one of the selected phones**. Android only means Android owners, iOS only means iOS owners, Android + iOS means anyone with a phone (that's what the default mobile tasks use). Desktop alongside a phone doesn't loosen this. If nobody online has a matching phone, the task is shown as **Unassigned** with the reason (for example "No one online has an Android phone.") and the spin still succeeds. Tasks with only Desktop can go to anyone.
+   - **Device rule (absolute):** a Mac task only goes to someone with a Mac. A task with Android and/or iOS only goes to someone with **one of the selected phones** (Android + iOS on one task means either phone). A task with Mac and a phone needs both. Desktop alongside them doesn't loosen this; a Desktop-only task can go to anyone. If nobody online has what a task needs, it is shown as **Unassigned** with the reason (for example "No one online has a Mac.") and the spin still succeeds.
    - **Team preference (soft):** among compatible people, members of the task's team are preferred. A task goes cross-team only when no compatible member of that team is online. The table marks it **Cross-team**.
    - Within that pool, the person with the fewest tasks so far gets it. Ties are broken randomly.
 
-**Load-balancing caveat:** the load is balanced within each pool, not across the whole room. A team with only one member online gives that person **all** of the team's tasks (4 for AF, for example), while others may get fewer. Two people on the same team who both have a phone (or both have none) always end within one task of each other.
+**Load-balancing caveat:** the load is balanced within each pool, not across the whole room. A team with only one member online gives that person **all** of the team's tasks they have devices for (all 8 for AF if they have a Mac, Android and iOS), while others may get fewer. Two people on the same team with the same devices always end within one task of each other.
 
-**Accepted trade-off:** because the moderator's browser computes the result, a moderator could submit a hand-picked assignment through the API. The database still enforces who may spin (only the host), how often (at most twice, the second only after 2+ complaints), that every task appears exactly once, that assignees are room members, and the phone rule. It also enforces who may change tasks (only the host), when (only before the first spin), and the shape of every task. It also stores names and team-match flags from its own tables, not from the client. This is an internal team tool: the room link is an open invitation, and a display name is not an identity.
+**Accepted trade-off:** because the moderator's browser computes the result, a moderator could submit a hand-picked assignment through the API. The database still enforces who may spin (only the host), how often (at most twice, the second only after 2+ complaints), that every task appears exactly once, that assignees are room members, and the device rule. It also enforces who may change tasks (only the host), when (only before the first spin), and the shape of every task. It also stores names and team-match flags from its own tables, not from the client. This is an internal team tool: the room link is an open invitation, and a display name is not an identity.
 
 ## Limitations
 
@@ -121,11 +132,11 @@ A "Multiple GoTrueClient instances" console warning here is expected and harmles
 - [ ] **Duplicate complaint.** P complains: the count becomes "1 of 2" everywhere and P's button reads "You complained". Calling `await sb.rpc("complain", { p_room_id: snap.room.id })` again leaves the count at 1, with no error.
 - [ ] **Third complaint.** Add a third profile, or let M complain. The count goes past the threshold ("3 complaints · second spin unlocked") and no spin starts on its own.
 - [ ] **Second spin is final.** M clicks **Spin again**. Everyone sees the reveal and "Final result". Complain and spin buttons disappear, and **Show first spin** shows the original table.
-- [ ] **Tasks on the create form.** On the start page, **Review** shows 16 tasks grouped by team. Delete one (two presses), edit one, add one, then create the room. The room's task list matches what you left.
+- [ ] **Tasks on the create form.** On the start page, **Review** shows 32 tasks grouped by team (8 each). Switch **Critical User Flows** off: 24 tasks, and back on: 32. Delete one (two presses), edit one, add one, then create the room. The room's task list matches what you left.
 - [ ] **Tasks in the lobby.** With P in the room, M deletes or edits a task: P's list updates within a second, and P has no edit buttons. In P's console, `await sb.rpc("update_tasks", { p_room_id: snap.room.id, p_tasks: snap.room.tasks })` returns "Only the moderator can change the tasks." with hint `not_host`.
-- [ ] **Device rule.** M sets a task to Android only while nobody online has Android, then spins: that task is Unassigned with "No one online has an Android phone."
+- [ ] **Device rule.** P joins with Mac and iOS on, nobody has Android. M spins: Mac and iOS tasks go to P (Mac rows show Safari), Android tasks are Unassigned with "No one online has an Android phone."
 - [ ] **Tasks lock at the first spin.** After the spin, the task panel is gone, and `update_tasks` from M's console returns hint `tasks_locked`.
-- [ ] **Defaults stay default.** Open the start page again: it shows "16 tasks · default set", whatever you changed in earlier rooms.
+- [ ] **Defaults stay default.** Open the start page again: it shows "32 tasks · default set", whatever you changed in earlier rooms.
 - [ ] **Reconnect re-fetches state.** In P's DevTools, set Network to *Offline*: the header shows "Reconnecting…". Meanwhile M complains or spins. Set P back to *Online*: the header returns to "Connected" and P shows the new state without replaying the reveal. While M is reconnecting, M's spin buttons are disabled.
 
 ## Troubleshooting

@@ -49,11 +49,14 @@ create table if not exists public.participants (
   user_id   uuid        not null references auth.users (id) on delete cascade,
   name      text        not null check (char_length(name) between 1 and 40 and name !~ '^\s|\s$'),
   team      text        not null check (team in ('AF', 'CYD', 'PB')),
+  mac       boolean     not null default false,
   android   boolean     not null default false,
   ios       boolean     not null default false,
   joined_at timestamptz not null default now(),
   constraint participants_pkey primary key (room_id, user_id)  -- one row per person per room
 );
+-- Added with Mac support; existing rows get false. (Everyone has Desktop, so it isn't stored.)
+alter table public.participants add column if not exists mac boolean not null default false;
 
 create table if not exists public.spins (
   id          uuid        primary key default gen_random_uuid(),
@@ -127,13 +130,15 @@ begin
   if jsonb_typeof(p_profile -> 'team') is distinct from 'string' or v_team not in ('AF', 'CYD', 'PB') then
     perform public._wot_fail('Team must be AF, CYD or PB.', 'invalid_profile', '22023');
   end if;
-  if coalesce(jsonb_typeof(p_profile -> 'android'), 'boolean') <> 'boolean'
+  if coalesce(jsonb_typeof(p_profile -> 'mac'), 'boolean') <> 'boolean'
+     or coalesce(jsonb_typeof(p_profile -> 'android'), 'boolean') <> 'boolean'
      or coalesce(jsonb_typeof(p_profile -> 'ios'), 'boolean') <> 'boolean' then
     perform public._wot_fail('Devices must be true or false.', 'invalid_profile', '22023');
   end if;
   return jsonb_build_object(
     'name', v_name,
     'team', v_team,
+    'mac', coalesce((p_profile ->> 'mac')::boolean, false),
     'android', coalesce((p_profile ->> 'android')::boolean, false),
     'ios', coalesce((p_profile ->> 'ios')::boolean, false)
   );
@@ -163,7 +168,7 @@ end $$;
 
 -- A room's task list (1-50 tasks). Shape of one task:
 --   { id, what, theme, team: 'AF'|'CYD'|'PB'|null, devices: ['desktop'|'mac'|'android'|'ios', ...] (1+),
---     browsers: [text] (0-10), users: [text] (0-10) }
+--     browsers: [text] (0-10, for Desktop; Mac means Safari), users: [text] (0-10) }
 -- Keep the limits equal to maxTasks and taskNameMaxLength in config.js.
 create or replace function public._wot_clean_tasks(p_tasks jsonb)
 returns jsonb language plpgsql immutable set search_path = '' as $$
@@ -225,16 +230,27 @@ returns text[] language sql immutable set search_path = '' as $$
   end
 $$;
 
--- Same text as unassignedReason() in domain.js.
-create or replace function public._wot_unassigned_reason(p_phones text[])
+-- Whether a task needs a tester with a Mac (old-shape tasks never do).
+create or replace function public._wot_task_needs_mac(p_task jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+  select coalesce(jsonb_typeof(p_task -> 'devices') = 'array' and (p_task -> 'devices') ? 'mac', false)
+$$;
+
+-- Same text as unassignedReason() in domain.js, e.g. "No one online has a Mac and an iOS phone."
+drop function if exists public._wot_unassigned_reason(text[]);  -- replaced by the version with p_mac
+create or replace function public._wot_unassigned_reason(p_phones text[], p_mac boolean)
 returns text language sql immutable set search_path = '' as $$
-  select 'No one online has an '
-    || array_to_string(array(
-         select case ph when 'android' then 'Android' else 'iOS' end
-         from unnest(case when cardinality(p_phones) > 0 then p_phones else array['android', 'ios'] end)
-              with ordinality as x(ph, ord)
-         order by ord), ' or ')
-    || ' phone.'
+  select 'No one online has '
+    || concat_ws(' and ',
+         case when coalesce(p_mac, false) then 'a Mac' end,
+         case when cardinality(p_phones) > 0 or not coalesce(p_mac, false) then
+           'an ' || array_to_string(array(
+             select case ph when 'android' then 'Android' else 'iOS' end
+             from unnest(case when cardinality(p_phones) > 0 then p_phones else array['android', 'ios'] end)
+                  with ordinality as x(ph, ord)
+             order by ord), ' or ') || ' phone'
+         end)
+    || '.'
 $$;
 
 -- The full room state a member sees. Called only from the RPCs below.
@@ -250,7 +266,7 @@ returns jsonb language sql stable set search_path = '' as $$
     'participants', coalesce((
       select jsonb_agg(jsonb_build_object(
                'user_id', p.user_id, 'name', p.name, 'team', p.team,
-               'android', p.android, 'ios', p.ios, 'joined_at', p.joined_at)
+               'mac', p.mac, 'android', p.android, 'ios', p.ios, 'joined_at', p.joined_at)
              order by p.joined_at, p.user_id)
       from public.participants p where p.room_id = r.id), '[]'::jsonb),
     'spins', coalesce((
@@ -308,8 +324,8 @@ begin
     end;
   end loop;
 
-  insert into public.participants (room_id, user_id, name, team, android, ios)
-  values (v_room_id, v_uid, v_profile ->> 'name', v_profile ->> 'team',
+  insert into public.participants (room_id, user_id, name, team, mac, android, ios)
+  values (v_room_id, v_uid, v_profile ->> 'name', v_profile ->> 'team', (v_profile ->> 'mac')::boolean,
           (v_profile ->> 'android')::boolean, (v_profile ->> 'ios')::boolean);
 
   return public._wot_snapshot(v_room_id);
@@ -342,12 +358,12 @@ begin
     end if;
   end if;
 
-  insert into public.participants (room_id, user_id, name, team, android, ios)
-  values (v_room.id, v_uid, v_profile ->> 'name', v_profile ->> 'team',
+  insert into public.participants (room_id, user_id, name, team, mac, android, ios)
+  values (v_room.id, v_uid, v_profile ->> 'name', v_profile ->> 'team', (v_profile ->> 'mac')::boolean,
           (v_profile ->> 'android')::boolean, (v_profile ->> 'ios')::boolean)
   on conflict (room_id, user_id) do update
     set name = excluded.name, team = excluded.team,
-        android = excluded.android, ios = excluded.ios;
+        mac = excluded.mac, android = excluded.android, ios = excluded.ios;
 
   update public.rooms set state_version = state_version + 1 where id = v_room.id;
   return public._wot_snapshot(v_room.id);
@@ -434,6 +450,7 @@ begin
     from jsonb_array_elements(p_assignments) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
     where public._wot_task_phones(e -> 'task') is distinct from public._wot_task_phones(t)
+       or public._wot_task_needs_mac(e -> 'task') is distinct from public._wot_task_needs_mac(t)
        or (e -> 'task' ->> 'team') is distinct from (t ->> 'team')
   ) then
     perform public._wot_fail('The task list changed. The room has been refreshed, so spin again.', 'stale_spin');
@@ -449,27 +466,30 @@ begin
     perform public._wot_fail('Tasks can only go to people in this room.', 'invalid_assignments', '22023');
   end if;
 
-  -- Phone rule: a task that needs a phone goes only to someone with one of those phones
+  -- Device rule: a Mac task goes only to someone with a Mac; a phone task only to someone
+  -- with one of the selected phones; a task with both needs both.
   if exists (
     select 1
     from jsonb_array_elements(p_assignments) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
     join public.participants p on p.room_id = p_room_id and p.user_id::text = (e ->> 'participant_id')
-    cross join lateral (select public._wot_task_phones(t) as phones) x
-    where cardinality(x.phones) > 0
-      and not ((p.android and 'android' = any (x.phones)) or (p.ios and 'ios' = any (x.phones)))
+    cross join lateral (select public._wot_task_phones(t) as phones, public._wot_task_needs_mac(t) as mac) x
+    where (x.mac and not p.mac)
+       or (cardinality(x.phones) > 0
+           and not ((p.android and 'android' = any (x.phones)) or (p.ios and 'ios' = any (x.phones))))
   ) then
-    perform public._wot_fail('A task that needs a phone went to someone without that phone.', 'invalid_assignments', '22023');
+    perform public._wot_fail('A task went to someone without the Mac or phone it needs.', 'invalid_assignments', '22023');
   end if;
 
-  -- Tasks that need no phone can always be assigned (the moderator is online), so they may not be left empty
+  -- Desktop-only tasks can always be assigned (the moderator is online), so they may not be left empty
   if exists (
     select 1
     from jsonb_array_elements(p_assignments) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
-    where (e ->> 'participant_id') is null and cardinality(public._wot_task_phones(t)) = 0
+    where (e ->> 'participant_id') is null
+      and cardinality(public._wot_task_phones(t)) = 0 and not public._wot_task_needs_mac(t)
   ) then
-    perform public._wot_fail('Tasks that need no phone cannot be left unassigned.', 'invalid_assignments', '22023');
+    perform public._wot_fail('Tasks that need no Mac or phone cannot be left unassigned.', 'invalid_assignments', '22023');
   end if;
 
   -- Store what the database knows, not the client's copies of names or tasks
@@ -478,11 +498,12 @@ begin
            'task', t.task,
            'participant_id', p.user_id,
            'participant', case when p.user_id is null then null else
-             jsonb_build_object('name', p.name, 'team', p.team, 'android', p.android, 'ios', p.ios) end,
+             jsonb_build_object('name', p.name, 'team', p.team, 'mac', p.mac, 'android', p.android, 'ios', p.ios) end,
            'team_match', case when p.user_id is null or (t.task ->> 'team') is null then null
                               else p.team = (t.task ->> 'team') end,
            'reason', case when p.user_id is null
-                          then public._wot_unassigned_reason(public._wot_task_phones(t.task)) end
+                          then public._wot_unassigned_reason(public._wot_task_phones(t.task),
+                                                             public._wot_task_needs_mac(t.task)) end
          ) order by t.ord)
   into v_stored
   from jsonb_array_elements(v_room.tasks) with ordinality as t(task, ord)
@@ -604,7 +625,8 @@ revoke all on function public._wot_clean_profile(jsonb)         from public, ano
 revoke all on function public._wot_clean_tasks(jsonb)           from public, anon, authenticated;
 revoke all on function public._wot_is_string_list(jsonb, integer, integer, text[]) from public, anon, authenticated;
 revoke all on function public._wot_task_phones(jsonb)           from public, anon, authenticated;
-revoke all on function public._wot_unassigned_reason(text[])    from public, anon, authenticated;
+revoke all on function public._wot_task_needs_mac(jsonb)        from public, anon, authenticated;
+revoke all on function public._wot_unassigned_reason(text[], boolean) from public, anon, authenticated;
 revoke all on function public._wot_snapshot(uuid)               from public, anon, authenticated;
 
 revoke all on function public.is_room_member(uuid)              from public, anon, authenticated;

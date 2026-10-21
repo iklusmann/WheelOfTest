@@ -70,8 +70,18 @@
         </fieldset>
 
         <fieldset class="field" aria-describedby="devices-hint">
-          <legend>Phones you can test on</legend>
+          <legend>Devices you can test on</legend>
           <div class="group">
+            <label class="group-row switch-row is-fixed">
+              <span>Desktop</span>
+              <input type="checkbox" name="desktop" role="switch" checked disabled>
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <label class="group-row switch-row">
+              <span>Mac</span>
+              <input type="checkbox" name="mac" role="switch">
+              <span class="switch" aria-hidden="true"></span>
+            </label>
             <label class="group-row switch-row">
               <span>Android</span>
               <input type="checkbox" name="android" role="switch">
@@ -83,7 +93,7 @@
               <span class="switch" aria-hidden="true"></span>
             </label>
           </div>
-          <p id="devices-hint" class="footnote">Leave both off if you only test on desktop.</p>
+          <p id="devices-hint" class="footnote">Everyone tests on Desktop. Turn on the others you have.</p>
         </fieldset>
 
         <!-- Create mode only: the task list the new room starts with -->
@@ -101,6 +111,11 @@
               <button type="button" class="btn btn-plain btn-small btn-confirmable" data-action="reset">
                 <span class="when-idle">Reset to defaults</span><span class="when-armed">Confirm reset</span>
               </button>
+              <label class="inline-switch cuf-switch">
+                <input type="checkbox" data-toggle="critical-flows" role="switch">
+                <span class="switch" aria-hidden="true"></span>
+                <span>Critical User Flows</span>
+              </label>
             </div>
             <div id="form-task-list" class="task-list"></div>
             <p class="footnote tasks-note">Changes apply to this room only. Every new room starts with the default tasks, and you can keep changing them in the room until you spin.</p>
@@ -188,6 +203,11 @@
               <button type="button" class="btn btn-plain btn-small btn-confirmable" data-action="reset">
                 <span class="when-idle">Reset to defaults</span><span class="when-armed">Confirm reset</span>
               </button>
+              <label class="inline-switch cuf-switch">
+                <input type="checkbox" data-toggle="critical-flows" role="switch">
+                <span class="switch" aria-hidden="true"></span>
+                <span>Critical User Flows</span>
+              </label>
             </div>
             <div id="room-task-list" class="task-list"></div>
           </section>
@@ -250,11 +270,11 @@
             </button>
           </legend>
           <div id="task-devices-chips" class="chips"></div>
-          <p id="task-devices-hint" class="footnote">With Android or iOS selected, the task only goes to someone who has one of those phones. Mac always uses Safari.</p>
+          <p id="task-devices-hint" class="footnote">Desktop can go to anyone. Mac only goes to someone with a Mac and is tested in Safari. Android or iOS only goes to someone with one of those phones.</p>
           <p id="task-devices-error" class="field-error" hidden></p>
         </fieldset>
 
-        <fieldset class="field" aria-labelledby="task-browsers-label">
+        <fieldset id="task-browsers" class="field" aria-labelledby="task-browsers-label" aria-describedby="task-browsers-hint">
           <legend class="legend-row">
             <span id="task-browsers-label">Browsers</span>
             <button type="button" class="select-all" data-select-all="browsers" aria-label="Select all browsers" title="Select all">
@@ -262,6 +282,7 @@
             </button>
           </legend>
           <div id="task-browsers-chips" class="chips"></div>
+          <p id="task-browsers-hint" class="footnote">For Desktop. Mac is always tested in Safari.</p>
         </fieldset>
 
         <fieldset class="field" aria-labelledby="task-users-label">

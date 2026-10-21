@@ -334,6 +334,9 @@ main { max-width: 1320px; margin: 0 auto; padding: 36px var(--gutter) 88px; }
 input:checked + .switch { background: var(--green-fill); box-shadow: inset 0 0 0 1px transparent; }
 input:checked + .switch::after { transform: translateX(20px); }
 input:focus-visible + .switch { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+/* a switch that is always on (Desktop on the join form) */
+.switch-row.is-fixed, .switch-row.is-fixed input { cursor: default; }
+input:disabled + .switch { opacity: 0.5; }
 
 .inline-switch {
   position: relative; display: inline-flex; align-items: center; gap: 10px; min-height: 36px;
@@ -408,10 +411,10 @@ input:focus-visible + .switch { outline: 3px solid var(--focus-ring); outline-of
 .result-group { overflow-x: auto; overflow-y: hidden; } /* scroll, never clip, if a cell is still too wide */
 .result-table { width: 100%; border-collapse: collapse; font-size: 15px; line-height: 1.33; letter-spacing: -0.016em; }
 .result-table th {
-  text-align: left; padding: 14px 14px 10px; border-bottom: 1px solid var(--separator);
+  text-align: left; padding: 14px 10px 10px; border-bottom: 1px solid var(--separator);
   font-size: 13px; font-weight: 500; color: var(--label-2); letter-spacing: -0.006em; white-space: nowrap;
 }
-.result-table td { padding: 12px 14px; vertical-align: middle; color: var(--label-2); }
+.result-table td { padding: 12px 10px; vertical-align: middle; color: var(--label-2); }
 .result-table tbody tr + tr td { border-top: 1px solid var(--separator); }
 .result-table th:first-child, .result-table td:first-child { padding-left: 18px; }
 .result-table .c-what, .result-table .c-assignee { color: var(--label); }
@@ -494,6 +497,9 @@ input:focus-visible + .switch { outline: 3px solid var(--focus-ring); outline-of
 .tasks-note { padding: 0 4px; }
 
 .task-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.task-tools .cuf-switch { margin-left: auto; }
+.inline-switch:has(input:disabled) { color: var(--label-3); cursor: default; }
+.inline-switch input:disabled { cursor: default; }
 .task-list { display: grid; gap: 18px; }
 .task-group { display: grid; gap: 7px; }
 .task-group-title {
@@ -554,7 +560,9 @@ input:focus-visible + .switch { outline: 3px solid var(--focus-ring); outline-of
   color: var(--label); font-size: 15px; font-weight: 500; letter-spacing: -0.01em;
   transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
-.chip:hover input:not(:checked) + span { background: color-mix(in srgb, var(--surface) 92%, var(--label)); }
+.chip:hover input:not(:checked):not(:disabled) + span { background: color-mix(in srgb, var(--surface) 92%, var(--label)); }
+.chip:has(input:disabled), .chip input:disabled { cursor: default; }
+.chip input:disabled + span { opacity: 0.4; }
 .chip input:checked + span { background: var(--accent); color: var(--on-accent); box-shadow: none; }
 .chip input[type="checkbox"]:checked + span::before {
   content: ""; width: 12px; height: 12px; margin-left: -3px; background: currentColor;
@@ -562,8 +570,6 @@ input:focus-visible + .switch { outline: 3px solid var(--focus-ring); outline-of
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2 6.4l2.6 2.6L10 3.2' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 .chip input:focus-visible + span { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
-fieldset:disabled .chip { opacity: 0.45; cursor: not-allowed; }
-fieldset:disabled .chip input { cursor: not-allowed; }
 
 /* "+" beside a group label: select every option in the group */
 .legend-row { display: flex; align-items: center; gap: 8px; }
@@ -577,7 +583,8 @@ fieldset:disabled .chip input { cursor: not-allowed; }
 .select-all svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .select-all:hover:not([aria-disabled="true"]) { background: var(--accent-fill-hover); }
 .select-all:active:not([aria-disabled="true"]) { transform: scale(0.88); transition-duration: 0.1s; }
-.select-all[aria-disabled="true"] { background: var(--fill); color: var(--label-3); cursor: default; }
+.select-all[aria-disabled="true"], .select-all:disabled { background: var(--fill); color: var(--label-3); cursor: default; }
+.field:disabled .legend-row > span { color: var(--label-3); }
 
 /* ------------------------------------------------------------------ task editor sheet */
 

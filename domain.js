@@ -2,12 +2,13 @@
 // No DOM, network or storage access. Randomness is always passed in.
 
 import { CONFIG } from "./config.js";
-import { DEFAULT_TASKS, DEVICES, BROWSERS, USER_LEVELS, THEMES } from "./tasks.js";
+import { DEFAULT_TASKS, DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js";
 
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I/L
 export const ROOM_CODE_LENGTH = 6;
 export const PHONES = ["android", "ios"];
 export const UNASSIGNED_NO_PHONE = "No one online has an Android or iOS phone.";
+export const UNASSIGNED_NO_MAC = "No one online has a Mac.";
 
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 const PHONE_LABELS = { android: "Android", ios: "iOS" };
@@ -32,7 +33,8 @@ export function validateProfile(input, options = {}) {
   return {
     ok,
     errors,
-    value: ok ? { name, team, android: input?.android === true, ios: input?.ios === true } : null
+    // Desktop is implied: everyone has one. Mac, Android and iOS are what the tester can also test on.
+    value: ok ? { name, team, mac: input?.mac === true, android: input?.android === true, ios: input?.ios === true } : null
   };
 }
 
@@ -90,10 +92,27 @@ export function taskPhones(task) {
   return PHONES.filter((p) => devices.includes(p));
 }
 
+/** Whether a task needs a tester with a Mac. */
+export function taskNeedsMac(task) {
+  return normalizeTask(task).devices.includes("mac");
+}
+
+/** Browsers a task is tested in: the selected ones on Desktop, plus Safari on Mac. */
+export function taskBrowsers(task) {
+  const t = normalizeTask(task);
+  const list = t.devices.includes("desktop") ? [...t.browsers] : [];
+  if (t.devices.includes("mac") && !list.includes(MAC_BROWSER.value)) list.push(MAC_BROWSER.value);
+  return list;
+}
+
+/** Same text as public._wot_unassigned_reason() in schema.sql. */
 export function unassignedReason(task) {
   const phones = taskPhones(task);
-  const names = (phones.length ? phones : PHONES).map((p) => PHONE_LABELS[p]);
-  return `No one online has an ${names.join(" or ")} phone.`;
+  const mac = taskNeedsMac(task);
+  const parts = [];
+  if (mac) parts.push("a Mac");
+  if (phones.length || !mac) parts.push(`an ${(phones.length ? phones : PHONES).map((p) => PHONE_LABELS[p]).join(" or ")} phone`);
+  return `No one online has ${parts.join(" and ")}.`;
 }
 
 /**
@@ -121,19 +140,18 @@ export function validateTask(input, options = {}) {
   const theme = input?.theme;
   if (!THEMES.some((t) => t.value === theme) && !(keep?.theme && theme === keep.theme)) errors.theme = "Choose a theme.";
 
-  const devices = pickOptions(input?.devices, DEVICES);  // no extras: the database only knows these
+  const devices = pickOptions(input?.devices, DEVICES);  // no extras: the database only knows these four
   if (devices.length === 0) errors.devices = "Select at least one device.";
 
   const ok = Object.keys(errors).length === 0;
-  // Mac without Desktop is Safari only, so there is no browser to pick.
-  const macOnly = devices.includes("mac") && !devices.includes("desktop");
   return {
     ok,
     errors,
     value: ok
       ? {
           what, theme, team, devices,
-          browsers: macOnly ? [] : pickOptions(input?.browsers, BROWSERS, keep?.browsers),
+          // Browsers belong to Desktop; without Desktop there is nothing to choose (Mac means Safari).
+          browsers: devices.includes("desktop") ? pickOptions(input?.browsers, BROWSERS, keep?.browsers) : [],
           users: pickOptions(input?.users, USER_LEVELS, keep?.users)
         }
       : null
@@ -171,9 +189,33 @@ export function sameTaskList(a, b) {
 
 export const isDefaultTaskList = (tasks) => sameTaskList(tasks, DEFAULT_TASKS);
 
+// ---- Critical User Flows: an optional block of default tasks (ids "cuf-…", also in old rooms)
+
+export const isCriticalFlow = (task) => String(task?.id ?? "").startsWith("cuf-");
+export const hasCriticalFlows = (tasks) => tasks.some(isCriticalFlow);
+export const CRITICAL_FLOW_COUNT = DEFAULT_TASKS.filter(isCriticalFlow).length;
+
+/**
+ * Turn the Critical User Flows block on or off. Off removes every "cuf-" task (edited ones too);
+ * on puts the default ones back at the top, where the defaults have them. No-op if already so.
+ */
+export function withCriticalFlows(tasks, on) {
+  if (!on) return tasks.filter((t) => !isCriticalFlow(t));
+  if (hasCriticalFlows(tasks)) return tasks;
+  const block = DEFAULT_TASKS.filter(isCriticalFlow)
+    .map((t) => ({ ...t, devices: [...t.devices], browsers: [...t.browsers], users: [...t.users] }));
+  return [...block, ...tasks];
+}
+
 // ------------------------------------------------------------- compatibility
 
+/**
+ * Who can take a task. Desktop: anyone. Mac: someone with a Mac. Android/iOS: someone with
+ * at least one of the selected phones (they test the same app). A task with Mac and phones
+ * needs both.
+ */
 export function canReceiveTask(task, participant) {
+  if (taskNeedsMac(task) && !participant.mac) return false;
   const phones = taskPhones(task);
   return phones.length === 0 || phones.some((p) => Boolean(participant[p]));
 }
@@ -261,7 +303,7 @@ export function assignTasks(tasks, participants, random) {
       task_id: task.id,
       task: taskSnapshot(task),
       participant_id: chosen.user_id,
-      participant: { name: chosen.name, team: chosen.team, android: Boolean(chosen.android), ios: Boolean(chosen.ios) },
+      participant: { name: chosen.name, team: chosen.team, mac: Boolean(chosen.mac), android: Boolean(chosen.android), ios: Boolean(chosen.ios) },
       team_match: task.team == null ? null : chosen.team === task.team,
       reason: null
     });
