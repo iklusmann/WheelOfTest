@@ -77,6 +77,7 @@ export const getRoom = (code) => rpc("get_room", { p_code: code });
 export const commitSpin = (roomId, spinNumber, assignments) =>
   rpc("commit_spin", { p_room_id: roomId, p_spin_number: spinNumber, p_assignments: assignments });
 export const complain = (roomId) => rpc("complain", { p_room_id: roomId });
+export const updateTasks = (roomId, tasks) => rpc("update_tasks", { p_room_id: roomId, p_tasks: tasks });
 
 // ------------------------------------------------------------------ realtime
 

@@ -26,9 +26,11 @@
 <script type="module">
 import {
   validateProfile, normalizeRoomCode, canReceiveTask, assignTasks,
-  seededRandom, shuffle, spinRule, UNASSIGNED_NO_PHONE, ROOM_CODE_ALPHABET
+  seededRandom, shuffle, spinRule, UNASSIGNED_NO_PHONE, ROOM_CODE_ALPHABET,
+  normalizeTask, taskPhones, unassignedReason, validateTask, validateTaskList,
+  newTaskId, sameTaskList, isDefaultTaskList, tasksEditable
 } from "./domain.js";
-import { TASKS } from "./tasks.js";
+import { DEFAULT_TASKS as TASKS, defaultTasks, DEVICES, BROWSERS, USER_LEVELS, THEMES } from "./tasks.js";
 
 // ---------------------------------------------------------------- tiny runner
 const results = [];
@@ -48,8 +50,9 @@ function person(name, team, { android = false, ios = false, online = true } = {}
   nextId += 1;
   return { user_id: `u-${String(nextId).padStart(3, "0")}-${name}`, name, team, android, ios, online };
 }
-const MOBILE = TASKS.filter((t) => t.platform === "mobile");
-const DESKTOP = TASKS.filter((t) => t.platform === "desktop");
+const isMobile = (task) => taskPhones(task).length > 0;   // needs a phone
+const MOBILE = TASKS.filter(isMobile);
+const DESKTOP = TASKS.filter((t) => !isMobile(t));
 const byId = (list) => new Map(list.map((x) => [x.user_id, x]));
 function assignedTo(result, userId) { return result.assignments.filter((a) => a.participant_id === userId); }
 function loads(result, people) {
@@ -77,15 +80,209 @@ function randomRoster(random) {
 }
 
 // ---------------------------------------------------------------- task data
-test("tasks.js has the 22 tasks with unique ids and valid values", () => {
+test("tasks.js has the 22 default tasks with unique ids and valid values", () => {
   equal(TASKS.length, 22, "task count");
   equal(new Set(TASKS.map((t) => t.id)).size, 22, "unique ids");
+  const values = (options) => options.map((o) => o.value);
   for (const t of TASKS) {
-    assert(["desktop", "mobile"].includes(t.platform), `platform of ${t.id}`);
+    assert(t.devices.length > 0 && t.devices.every((d) => values(DEVICES).includes(d)), `devices of ${t.id}`);
+    assert(t.browsers.every((b) => values(BROWSERS).includes(b)), `browsers of ${t.id}`);
+    assert(t.users.every((u) => values(USER_LEVELS).includes(u)), `users of ${t.id}`);
+    assert(values(THEMES).includes(t.theme), `theme of ${t.id}`);
     assert(t.team === null || ["AF", "CYD", "PB"].includes(t.team), `team of ${t.id}`);
+    equal(validateTask(t).ok, true, `${t.id} passes the editor's validation`);
   }
   equal(TASKS.filter((t) => t.what === "CD Release").every((t) => t.team === "CYD"), true, "CD Release belongs to CYD");
   equal(MOBILE.length, 8, "mobile task count");
+  assert(MOBILE.every((t) => JSON.stringify(t.devices) === '["android","ios"]' && t.browsers.length === 0), "mobile = either phone, no browser");
+  equal(validateTaskList(TASKS).ok, true, "default list is valid");
+});
+
+// ---------------------------------------------------------------- defaults stay default
+test("the defaults are frozen and defaultTasks() hands out independent copies", () => {
+  assert(Object.isFrozen(TASKS) && TASKS.every((t) => Object.isFrozen(t) && Object.isFrozen(t.devices)), "deep-frozen");
+  const a = defaultTasks();
+  const b = defaultTasks();
+  a[0].what = "Changed";
+  a[1].devices.push("ios");
+  a.splice(2, 1);
+  equal(b, JSON.parse(JSON.stringify(TASKS)), "a second copy is untouched");
+  equal(TASKS[0].what, "Critical User Flows", "the defaults are untouched");
+  equal(isDefaultTaskList(b), true, "fresh copy is the default set");
+  equal(isDefaultTaskList(a), false, "edited copy is not");
+});
+
+test("sameTaskList compares fields and order, not key order or legacy shape", () => {
+  const reordered = TASKS.map((t) => ({ users: t.users, browsers: t.browsers, devices: t.devices, team: t.team, theme: t.theme, what: t.what, id: t.id }));
+  equal(sameTaskList(reordered, TASKS), true, "key order ignored");
+  equal(sameTaskList([...TASKS].reverse(), TASKS), false, "order matters");
+  equal(sameTaskList(TASKS.slice(1), TASKS), false, "length matters");
+});
+
+// ---------------------------------------------------------------- legacy rooms
+// Rooms created before tasks were editable stored { device, platform } instead of { devices, browsers }.
+const legacyOf = (t) => ({
+  id: t.id, what: t.what, theme: t.theme,
+  device: isMobile(t) ? "mobile" : t.browsers[0], platform: isMobile(t) ? "mobile" : "desktop",
+  team: t.team, users: t.users
+});
+
+test("normalizeTask turns every legacy default task into exactly the new default", () => {
+  for (const t of TASKS) equal(normalizeTask(legacyOf(t)), JSON.parse(JSON.stringify(t)), t.id);
+  equal(normalizeTask(TASKS[3]), JSON.parse(JSON.stringify(TASKS[3])), "current shape passes through");
+  equal(normalizeTask({ id: "x", what: "W", theme: "flow", team: "AF", devices: ["ios"], browsers: ["safari"], users: [], extra: 1 }),
+    { id: "x", what: "W", theme: "flow", team: "AF", devices: ["ios"], browsers: ["safari"], users: [] }, "unknown fields dropped");
+});
+
+test("legacy tasks assign exactly like the new defaults (same seed, same result)", () => {
+  const roster = [person("A", "AF", { android: true }), person("B", "PB"), person("C", "CYD", { ios: true }), person("D", "AF")];
+  for (let seed = 1; seed <= 40; seed += 1) {
+    const now = assignTasks(TASKS, roster, seededRandom(seed));
+    const old = assignTasks(TASKS.map(legacyOf), roster, seededRandom(seed));
+    equal(old, now, `seed ${seed}`);
+  }
+});
+
+// ---------------------------------------------------------------- devices per task
+const task = (id, devices, team = null) => ({ id, what: `T ${id}`, theme: "e3dc", team, devices, browsers: [], users: [] });
+
+test("canReceiveTask follows the task's devices: phones are not interchangeable", () => {
+  const none = person("None", "AF"), droid = person("Droid", "AF", { android: true });
+  const iphone = person("Iphone", "AF", { ios: true }), both = person("Both", "AF", { android: true, ios: true });
+  const cases = [
+    [["desktop"], [true, true, true, true]],
+    [["android"], [false, true, false, true]],
+    [["ios"], [false, false, true, true]],
+    [["android", "ios"], [false, true, true, true]],
+    [["desktop", "ios"], [false, false, true, true]],
+    [["desktop", "android", "ios"], [false, true, true, true]]
+  ];
+  for (const [devices, expected] of cases) {
+    equal([none, droid, iphone, both].map((p) => canReceiveTask(task("x", devices), p)), expected, JSON.stringify(devices));
+  }
+});
+
+test("an Android-only task with only iOS people online is Unassigned with an Android reason", () => {
+  const tasks = [task("droid", ["android"]), task("apple", ["ios"]), task("any", ["android", "ios"]), task("desk", ["desktop"])];
+  const r = assignTasks(tasks, [person("I", "AF", { ios: true }), person("D", "PB")], seededRandom(4));
+  const by = new Map(r.assignments.map((a) => [a.task_id, a]));
+  equal(by.get("droid").participant_id, null, "android task unassigned");
+  equal(by.get("droid").reason, "No one online has an Android phone.", "reason");
+  assert(by.get("apple").participant.ios, "iOS task to the iPhone owner");
+  assert(by.get("any").participant.ios, "either-phone task to the iPhone owner");
+  assert(by.get("desk").participant_id !== null, "desktop task assigned");
+});
+
+test("unassignedReason names the phones the task needs", () => {
+  equal(unassignedReason(task("a", ["android"])), "No one online has an Android phone.", "android");
+  equal(unassignedReason(task("b", ["ios", "desktop"])), "No one online has an iOS phone.", "ios");
+  equal(unassignedReason(task("c", ["ios", "android"])), UNASSIGNED_NO_PHONE, "both, in fixed order");
+  equal(unassignedReason(legacyOf(MOBILE[0])), UNASSIGNED_NO_PHONE, "legacy mobile");
+});
+
+test("property check over 500 random custom task lists: device rule, team rule, completeness", () => {
+  const all = ["desktop", "android", "ios"];
+  const teams = ["AF", "CYD", "PB", null];
+  for (let seed = 1; seed <= 500; seed += 1) {
+    const random = seededRandom(seed * 31);
+    const roster = randomRoster(random);
+    const n = 1 + Math.floor(random() * 30);
+    const tasks = Array.from({ length: n }, (_, i) => {
+      let devices = all.filter(() => random() < 0.5);
+      if (devices.length === 0) devices = [all[Math.floor(random() * 3)]];
+      return task(`t${i}`, devices, teams[Math.floor(random() * 4)]);
+    });
+    const r = assignTasks(tasks, roster, random);
+    const online = roster.filter((p) => p.online);
+    if (online.length === 0) { equal(r.ok, false, `seed ${seed} empty`); continue; }
+    equal(r.assignments.map((a) => a.task_id), tasks.map((t) => t.id), `seed ${seed}: every task once, in order`);
+    const people = byId(roster);
+    for (const a of r.assignments) {
+      const compatible = online.filter((p) => canReceiveTask(a.task, p));
+      if (a.participant_id === null) {
+        equal(compatible.length, 0, `seed ${seed}: ${a.task_id} unassigned while someone could take it`);
+        equal(a.reason, unassignedReason(a.task), "reason");
+        continue;
+      }
+      const p = people.get(a.participant_id);
+      assert(p.online && canReceiveTask(a.task, p), `seed ${seed}: device rule broken on ${a.task_id}`);
+      if (a.task.team) equal(p.team === a.task.team, compatible.some((c) => c.team === a.task.team), `seed ${seed}: team rule on ${a.task_id}`);
+    }
+  }
+});
+
+// ---------------------------------------------------------------- task editor validation
+test("validateTask: name is required, trimmed, at most 60 characters", () => {
+  const base = { team: "AF", theme: "e3dc", devices: ["desktop"] };
+  equal(validateTask({ ...base, what: "" }).ok, false, "empty");
+  equal(validateTask({ ...base, what: "   " }).errors.what, "Give the task a name.", "blank");
+  equal(validateTask({ ...base, what: "  Smoke  " }).value.what, "Smoke", "trimmed");
+  equal(validateTask({ ...base, what: "x".repeat(60) }).ok, true, "60");
+  equal(validateTask({ ...base, what: "x".repeat(61) }).ok, false, "61");
+  equal(validateTask({ ...base, what: "a\u0007b" }).ok, false, "control char");
+});
+
+test("validateTask: team is one team or all teams; theme and at least one device are required", () => {
+  const base = { what: "T", theme: "flow", devices: ["ios"] };
+  equal(validateTask({ ...base, team: "" }).value.team, null, "'' = all teams");
+  equal(validateTask({ ...base, team: null }).value.team, null, "null = all teams");
+  equal(validateTask({ ...base, team: "PB" }).value.team, "PB", "one team");
+  equal(validateTask({ ...base, team: "XX" }).ok, false, "unknown team");
+  equal(validateTask({ ...base, team: "AF", theme: "neon" }).ok, false, "unknown theme");
+  const noDevice = validateTask({ ...base, team: "AF", devices: [] });
+  equal(noDevice.ok, false, "no device");
+  assert(noDevice.errors.devices, "devices error");
+  equal(validateTask({ ...base, team: "AF", devices: ["tablet"] }).ok, false, "only unknown devices");
+});
+
+test("validateTask: options are deduplicated, unknown values dropped, kept in option order", () => {
+  const r = validateTask({
+    what: "T", team: "AF", theme: "e3dc",
+    devices: ["ios", "desktop", "ios", "tablet"], browsers: ["safari", "chrome", "opera"], users: ["service", "owner", 3]
+  });
+  equal(r.value, { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "ios"], browsers: ["chrome", "safari"], users: ["owner", "service"] }, "clean");
+  equal(validateTask({ what: "T", team: "AF", theme: "e3dc", devices: ["android"] }).value.browsers, [], "browsers optional");
+});
+
+test("validateTask keep: values the task already had survive an edit, new unknown ones don't", () => {
+  const original = { id: "x", what: "T", theme: "neon", team: "QA", devices: ["desktop"], browsers: ["opera", "chrome"], users: ["admin"] };
+  const input = { what: "T2", team: "QA", theme: "neon", devices: ["desktop"], browsers: ["chrome", "opera", "brave"], users: ["admin", "owner"] };
+  equal(validateTask(input).ok, false, "without keep: unknown team/theme rejected");
+  const r = validateTask(input, { keep: original });
+  equal(r.value, { what: "T2", theme: "neon", team: "QA", devices: ["desktop"], browsers: ["chrome", "opera"], users: ["owner", "admin"] }, "kept, 'brave' dropped");
+  equal(validateTask({ ...input, team: "Other" }, { keep: original }).ok, false, "a different unknown team is still rejected");
+});
+
+test("normalizeTask drops duplicate list entries (so old rooms stay editable)", () => {
+  equal(normalizeTask({ id: "x", what: "W", theme: "flow", team: null, devices: ["ios", "ios"], browsers: ["edge", "edge"], users: ["owner", "owner"] }).users, ["owner"], "users");
+  equal(normalizeTask({ id: "x", what: "W", theme: "flow", team: null, devices: ["ios", "ios"], browsers: [], users: [] }).devices, ["ios"], "devices");
+});
+
+test("validateTaskList: 1 to 50 tasks with unique ids", () => {
+  equal(validateTaskList([]).ok, false, "empty");
+  equal(validateTaskList([task("a", ["desktop"])]).ok, true, "one");
+  equal(validateTaskList(Array.from({ length: 50 }, (_, i) => task(`t${i}`, ["desktop"]))).ok, true, "50");
+  equal(validateTaskList(Array.from({ length: 51 }, (_, i) => task(`t${i}`, ["desktop"]))).ok, false, "51");
+  equal(validateTaskList([task("a", ["desktop"]), task("a", ["ios"])]).ok, false, "duplicate ids");
+});
+
+test("newTaskId never collides, even with a broken random source", () => {
+  const ids = new Set(TASKS.map((t) => t.id));
+  const random = seededRandom(5);
+  for (let i = 0; i < 200; i += 1) {
+    const id = newTaskId(ids, random);
+    assert(!ids.has(id) && /^task-[a-z0-9]+$/.test(id), `fresh id ${id}`);
+    ids.add(id);
+  }
+  const stuck = new Set();
+  for (let i = 0; i < 5; i += 1) stuck.add(newTaskId(stuck, () => 0));
+  equal(stuck.size, 5, "constant random still gives unique ids");
+});
+
+test("tasksEditable: only in the lobby before the first spin", () => {
+  equal(tasksEditable({ status: "lobby", spins_used: 0 }), true, "lobby");
+  equal(tasksEditable({ status: "spun", spins_used: 1 }), false, "spun");
+  equal(tasksEditable({ status: "final", spins_used: 2 }), false, "final");
 });
 
 // ---------------------------------------------------------------- compatibility
@@ -103,13 +300,13 @@ test("a participant with no phone receives desktop tasks and never mobile tasks"
     assert(r.ok, "spin ok");
     const mine = assignedTo(r, noPhone.user_id);
     assert(mine.length > 0, "gets some tasks");
-    assert(mine.every((a) => a.task.platform === "desktop"), `seed ${seed}: no-phone got a mobile task`);
+    assert(mine.every((a) => !isMobile(a.task)), `seed ${seed}: no-phone got a mobile task`);
   }
   // Alone without a phone: every desktop task, zero mobile tasks.
   const alone = person("Alone", "CYD");
   const r = assignTasks(TASKS, [alone], seededRandom(7));
   equal(assignedTo(r, alone.user_id).length, DESKTOP.length, "all desktop tasks");
-  assert(assignedTo(r, alone.user_id).every((a) => a.task.platform === "desktop"), "desktop only");
+  assert(assignedTo(r, alone.user_id).every((a) => !isMobile(a.task)), "desktop only");
 });
 
 test("Android-only, iOS-only and both-device participants can all receive mobile tasks", () => {
@@ -117,7 +314,7 @@ test("Android-only, iOS-only and both-device participants can all receive mobile
     const p = person("Mobile", "AF", devices);
     assert(MOBILE.every((t) => canReceiveTask(t, p)), `canReceiveTask ${JSON.stringify(devices)}`);
     const r = assignTasks(TASKS, [p], seededRandom(3));
-    equal(assignedTo(r, p.user_id).filter((a) => a.task.platform === "mobile").length, MOBILE.length, `all mobile for ${JSON.stringify(devices)}`);
+    equal(assignedTo(r, p.user_id).filter((a) => isMobile(a.task)).length, MOBILE.length, `all mobile for ${JSON.stringify(devices)}`);
     equal(r.assignments.filter((a) => a.participant_id === null).length, 0, "nothing unassigned");
   }
 });
@@ -176,11 +373,11 @@ test("a team task goes cross-team only when no compatible member of that team is
     const people = byId(roster);
     const r = assignTasks(TASKS, roster, seededRandom(seed));
     for (const a of r.assignments) {
-      if (a.task.team === "AF" && a.task.platform === "desktop") {
+      if (a.task.team === "AF" && !isMobile(a.task)) {
         equal(a.participant_id, afDesk.user_id, `AF desktop stays in AF (${a.task_id})`);
         equal(a.team_match, true, "match");
       }
-      if (a.task.team === "AF" && a.task.platform === "mobile") {
+      if (a.task.team === "AF" && isMobile(a.task)) {
         equal(a.participant_id, pb.user_id, `AF mobile crosses to the only phone owner (${a.task_id})`);
         equal(a.team_match, false, "cross-team flagged");
       }
@@ -198,10 +395,10 @@ test("team preference never overrides the phone rule", () => {
     const af = person("AFnoPhone", "AF");
     const cyd = person("CYDphone", "CYD", { android: true });
     const r = assignTasks(TASKS, [af, cyd], seededRandom(seed));
-    for (const a of r.assignments.filter((x) => x.task.team === "AF" && x.task.platform === "mobile")) {
+    for (const a of r.assignments.filter((x) => x.task.team === "AF" && isMobile(x.task))) {
       equal(a.participant_id, cyd.user_id, `seed ${seed}: ${a.task_id} must go to a phone owner`);
     }
-    assert(assignedTo(r, af.user_id).every((a) => a.task.platform === "desktop"), "AF member got a mobile task");
+    assert(assignedTo(r, af.user_id).every((a) => !isMobile(a.task)), "AF member got a mobile task");
   }
 });
 
@@ -218,9 +415,9 @@ test("a mobile task with no phone owner online is Unassigned and the spin still 
   equal(r.ok, true, "spin succeeds");
   const unassigned = r.assignments.filter((a) => a.participant_id === null);
   equal(unassigned.length, MOBILE.length, "every mobile task unassigned");
-  assert(unassigned.every((a) => a.task.platform === "mobile"), "only mobile tasks are unassigned");
+  assert(unassigned.every((a) => isMobile(a.task)), "only mobile tasks are unassigned");
   assert(unassigned.every((a) => a.reason === UNASSIGNED_NO_PHONE && a.participant === null && a.team_match === null), "reason and empty fields");
-  assert(r.assignments.filter((a) => a.task.platform === "desktop").every((a) => a.participant_id !== null), "desktop all assigned");
+  assert(r.assignments.filter((a) => !isMobile(a.task)).every((a) => a.participant_id !== null), "desktop all assigned");
 });
 
 // ---------------------------------------------------------------- completeness

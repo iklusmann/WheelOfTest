@@ -86,6 +86,27 @@
           <p id="devices-hint" class="footnote">Leave both off if you only test on desktop.</p>
         </fieldset>
 
+        <!-- Create mode only: the task list the new room starts with -->
+        <section id="form-tasks" class="field form-tasks" aria-labelledby="form-tasks-label" hidden>
+          <h2 id="form-tasks-label" class="field-label">Tasks for this room</h2>
+          <div class="group">
+            <div class="group-row tasks-bar">
+              <span id="form-tasks-summary" class="tasks-bar-summary"></span>
+              <button type="button" id="form-tasks-toggle" class="btn btn-plain btn-small" aria-expanded="false" aria-controls="form-tasks-body">Review</button>
+            </div>
+          </div>
+          <div id="form-tasks-body" class="tasks-body" hidden>
+            <div id="form-task-tools" class="task-tools">
+              <button type="button" class="btn btn-tinted btn-small" data-action="add">Add task</button>
+              <button type="button" class="btn btn-plain btn-small btn-confirmable" data-action="reset">
+                <span class="when-idle">Reset to defaults</span><span class="when-armed">Confirm reset</span>
+              </button>
+            </div>
+            <div id="form-task-list" class="task-list"></div>
+            <p class="footnote tasks-note">Changes apply to this room only. Every new room starts with the default tasks, and you can keep changing them in the room until you spin.</p>
+          </div>
+        </section>
+
         <p id="form-error" class="notice notice-error" role="alert" hidden></p>
         <button type="submit" id="form-submit" class="btn btn-primary btn-block">Create room</button>
       </form>
@@ -140,8 +161,8 @@
                     <tr role="row">
                       <th role="columnheader" scope="col">Task</th>
                       <th role="columnheader" scope="col">Theme</th>
-                      <th role="columnheader" scope="col">Device</th>
-                      <th role="columnheader" scope="col">Platform</th>
+                      <th role="columnheader" scope="col">Devices</th>
+                      <th role="columnheader" scope="col">Browsers</th>
                       <th role="columnheader" scope="col">Task team</th>
                       <th role="columnheader" scope="col">Assigned to</th>
                       <th role="columnheader" scope="col">Their team</th>
@@ -153,6 +174,22 @@
                 <p id="result-empty" class="empty" hidden>You have no tasks in this spin.</p>
               </div>
             </div>
+          </section>
+
+          <!-- Before the first spin: the room's tasks (moderator can edit, everyone sees them) -->
+          <section id="room-tasks" class="room-tasks" aria-labelledby="room-tasks-title" hidden>
+            <div class="section-head">
+              <h2 id="room-tasks-title" class="title-3">Tasks</h2>
+              <p id="room-tasks-summary" class="footnote"></p>
+            </div>
+            <p id="room-tasks-hint" class="footnote room-tasks-hint"></p>
+            <div id="room-task-tools" class="task-tools" hidden>
+              <button type="button" class="btn btn-tinted btn-small" data-action="add">Add task</button>
+              <button type="button" class="btn btn-plain btn-small btn-confirmable" data-action="reset">
+                <span class="when-idle">Reset to defaults</span><span class="when-armed">Confirm reset</span>
+              </button>
+            </div>
+            <div id="room-task-list" class="task-list"></div>
           </section>
 
           <section id="complaints" class="group complaints" aria-label="Complaints" hidden>
@@ -177,6 +214,74 @@
       </div>
     </section>
   </main>
+
+  <!-- Task editor (create form and room). Chips are filled in from tasks.js. -->
+  <dialog id="task-dialog" class="sheet" aria-labelledby="task-dialog-title">
+    <form id="task-form" class="sheet-form" novalidate>
+      <div class="sheet-body">
+        <h2 id="task-dialog-title" class="title-3">Edit task</h2>
+
+        <div class="field">
+          <div class="text-field">
+            <input id="task-what" name="what" type="text" placeholder=" " maxlength="60" autocomplete="off" required aria-describedby="task-what-error">
+            <label for="task-what">Task name</label>
+          </div>
+          <p id="task-what-error" class="field-error" hidden></p>
+        </div>
+
+        <fieldset class="field" aria-describedby="task-team-error">
+          <legend>Team</legend>
+          <div id="task-team-chips" class="chips"></div>
+          <p id="task-team-error" class="field-error" hidden></p>
+        </fieldset>
+
+        <fieldset class="field" aria-describedby="task-theme-error">
+          <legend>Theme</legend>
+          <div id="task-theme-chips" class="chips"></div>
+          <p id="task-theme-error" class="field-error" hidden></p>
+        </fieldset>
+
+        <!-- Multi-select groups: the + beside the label selects every option in the group -->
+        <fieldset class="field" aria-labelledby="task-devices-label" aria-describedby="task-devices-hint task-devices-error">
+          <legend class="legend-row">
+            <span id="task-devices-label">Devices</span>
+            <button type="button" class="select-all" data-select-all="devices" aria-label="Select all devices" title="Select all">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            </button>
+          </legend>
+          <div id="task-devices-chips" class="chips"></div>
+          <p id="task-devices-hint" class="footnote">With Android or iOS selected, the task only goes to someone who has one of those phones.</p>
+          <p id="task-devices-error" class="field-error" hidden></p>
+        </fieldset>
+
+        <fieldset class="field" aria-labelledby="task-browsers-label">
+          <legend class="legend-row">
+            <span id="task-browsers-label">Browsers</span>
+            <button type="button" class="select-all" data-select-all="browsers" aria-label="Select all browsers" title="Select all">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            </button>
+          </legend>
+          <div id="task-browsers-chips" class="chips"></div>
+        </fieldset>
+
+        <fieldset class="field" aria-labelledby="task-users-label">
+          <legend class="legend-row">
+            <span id="task-users-label">User levels</span>
+            <button type="button" class="select-all" data-select-all="users" aria-label="Select all user levels" title="Select all">
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+            </button>
+          </legend>
+          <div id="task-users-chips" class="chips"></div>
+        </fieldset>
+
+        <p id="task-form-error" class="notice notice-error" role="alert" hidden></p>
+      </div>
+      <div class="sheet-actions">
+        <button type="button" id="task-cancel" class="btn btn-tinted">Cancel</button>
+        <button type="submit" id="task-save" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 </body>

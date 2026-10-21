@@ -2,12 +2,15 @@
 // No DOM, network or storage access. Randomness is always passed in.
 
 import { CONFIG } from "./config.js";
+import { DEFAULT_TASKS, DEVICES, BROWSERS, USER_LEVELS, THEMES } from "./tasks.js";
 
 export const ROOM_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // no 0/O, 1/I/L
 export const ROOM_CODE_LENGTH = 6;
+export const PHONES = ["android", "ios"];
 export const UNASSIGNED_NO_PHONE = "No one online has an Android or iOS phone.";
 
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
+const PHONE_LABELS = { android: "Android", ios: "iOS" };
 
 // ---------------------------------------------------------------- validation
 
@@ -41,11 +44,136 @@ export function normalizeRoomCode(raw) {
   return code;
 }
 
+// ---------------------------------------------------------------- tasks
+
+const strings = (value) => (Array.isArray(value) ? [...new Set(value.filter((v) => typeof v === "string"))] : []);
+
+/**
+ * Keep option values only, without duplicates, in the order the options are listed.
+ * `keep` are values the task already had that aren't in the list; they may stay (after the known ones).
+ */
+function pickOptions(values, options, keep = []) {
+  const chosen = new Set(strings(values));
+  const known = options.map((o) => o.value);
+  return [...new Set([...known, ...strings(keep)])].filter((v) => chosen.has(v));
+}
+
+/**
+ * Any stored task → the current shape. Rooms created before tasks were editable stored
+ * `platform` ("desktop" | "mobile") and `device` (the browser, or "mobile"); those are
+ * converted, so an old room behaves exactly as it did.
+ */
+export function normalizeTask(task) {
+  const t = task && typeof task === "object" ? task : {};
+  let devices = strings(t.devices);
+  let browsers = strings(t.browsers);
+  if (!Array.isArray(t.devices)) {
+    devices = t.platform === "mobile" ? [...PHONES] : ["desktop"];
+    if (!Array.isArray(t.browsers)) {
+      browsers = t.platform !== "mobile" && typeof t.device === "string" && t.device !== "mobile" ? [t.device] : [];
+    }
+  }
+  return {
+    id: String(t.id ?? ""),
+    what: typeof t.what === "string" ? t.what : "",
+    theme: typeof t.theme === "string" ? t.theme : "",
+    team: typeof t.team === "string" ? t.team : null,
+    devices,
+    browsers,
+    users: strings(t.users)
+  };
+}
+
+/** The phones a task needs (the assignee must have at least one), in PHONES order. Empty = no phone needed. */
+export function taskPhones(task) {
+  const devices = normalizeTask(task).devices;
+  return PHONES.filter((p) => devices.includes(p));
+}
+
+export function unassignedReason(task) {
+  const phones = taskPhones(task);
+  const names = (phones.length ? phones : PHONES).map((p) => PHONE_LABELS[p]);
+  return `No one online has an ${names.join(" or ")} phone.`;
+}
+
+/**
+ * Validate one task from the editor. Returns { ok, errors, value } where value has no id;
+ * the caller keeps the existing id or makes a new one. Team "" or null means all teams.
+ * options.keep: the task as it was before editing. A team, theme, browser or user level it
+ * already had stays allowed even when it isn't in the option lists (e.g. TEAM_OPTIONS
+ * leaves out a team), so editing never changes a field silently.
+ */
+export function validateTask(input, options = {}) {
+  const keep = options.keep ? normalizeTask(options.keep) : null;
+  const teams = [...(options.teams ?? CONFIG.teams), ...(keep?.team ? [keep.team] : [])];
+  const maxName = options.taskNameMaxLength ?? CONFIG.taskNameMaxLength;
+  const errors = {};
+
+  const what = typeof input?.what === "string" ? input.what.trim() : "";
+  const length = Array.from(what).length;
+  if (length === 0) errors.what = "Give the task a name.";
+  else if (length > maxName) errors.what = `Use at most ${maxName} characters.`;
+  else if (CONTROL_CHARS.test(what)) errors.what = "The name contains characters that are not allowed.";
+
+  const team = input?.team === "" || input?.team == null ? null : input.team;
+  if (team !== null && (typeof team !== "string" || !teams.includes(team))) errors.team = "Choose a team or All teams.";
+
+  const theme = input?.theme;
+  if (!THEMES.some((t) => t.value === theme) && !(keep?.theme && theme === keep.theme)) errors.theme = "Choose a theme.";
+
+  const devices = pickOptions(input?.devices, DEVICES);  // no extras: the database only knows these three
+  if (devices.length === 0) errors.devices = "Select at least one device.";
+
+  const ok = Object.keys(errors).length === 0;
+  return {
+    ok,
+    errors,
+    value: ok
+      ? {
+          what, theme, team, devices,
+          browsers: pickOptions(input?.browsers, BROWSERS, keep?.browsers),
+          users: pickOptions(input?.users, USER_LEVELS, keep?.users)
+        }
+      : null
+  };
+}
+
+/** Rules for a room's whole task list. Mirrors public._wot_clean_tasks(). */
+export function validateTaskList(tasks, options = {}) {
+  const max = options.maxTasks ?? CONFIG.maxTasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) return { ok: false, error: "A room needs at least one task." };
+  if (tasks.length > max) return { ok: false, error: `A room can have at most ${max} tasks.` };
+  const ids = new Set(tasks.map((t) => t?.id));
+  if (ids.size !== tasks.length || ids.has(undefined) || ids.has("")) return { ok: false, error: "Task ids must be unique." };
+  return { ok: true, error: null };
+}
+
+/** A task id that is not in `existingIds`. */
+export function newTaskId(existingIds, random) {
+  const taken = new Set(existingIds);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    let id = "task-";
+    for (let i = 0; i < 8; i += 1) id += "abcdefghijkmnpqrstuvwxyz23456789"[pickIndex(32, random)];
+    if (!taken.has(id)) return id;
+  }
+  let n = taken.size + 1; // a broken random source: fall back to a counter
+  while (taken.has(`task-${n}`)) n += 1;
+  return `task-${n}`;
+}
+
+/** Whether two task lists are the same, field by field and in order. */
+export function sameTaskList(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((t, i) => JSON.stringify(normalizeTask(t)) === JSON.stringify(normalizeTask(b[i])));
+}
+
+export const isDefaultTaskList = (tasks) => sameTaskList(tasks, DEFAULT_TASKS);
+
 // ------------------------------------------------------------- compatibility
 
 export function canReceiveTask(task, participant) {
-  if (task.platform === "mobile") return Boolean(participant.android || participant.ios);
-  return true;
+  const phones = taskPhones(task);
+  return phones.length === 0 || phones.some((p) => Boolean(participant[p]));
 }
 
 // ---------------------------------------------------------------- randomness
@@ -79,26 +207,18 @@ export function shuffle(items, random) {
 
 // ---------------------------------------------------------------- assignment
 
-function taskSnapshot(task) {
-  return {
-    id: task.id,
-    what: task.what,
-    theme: task.theme,
-    device: task.device,
-    platform: task.platform,
-    team: task.team ?? null,
-    users: Array.isArray(task.users) ? task.users.slice() : []
-  };
-}
+const taskSnapshot = normalizeTask;
 
 /**
  * Assign every task to an online participant.
  *
+ * tasks: room tasks (current or legacy shape)
  * participants: [{ user_id, name, team, android, ios, online }]
  * random: () => number in [0, 1)
  *
  * Returns { ok: true, assignments } with one entry per task, in the order of `tasks`,
- * or { ok: false, error } when nobody is online.
+ * or { ok: false, error } when nobody is online. A task that needs a phone nobody online
+ * has is returned unassigned with a reason.
  */
 export function assignTasks(tasks, participants, random) {
   if (!Array.isArray(tasks) || !Array.isArray(participants)) throw new TypeError("tasks and participants must be arrays");
@@ -123,7 +243,7 @@ export function assignTasks(tasks, participants, random) {
         participant_id: null,
         participant: null,
         team_match: null,
-        reason: UNASSIGNED_NO_PHONE
+        reason: unassignedReason(task)
       });
       continue;
     }
@@ -168,4 +288,9 @@ export function spinRule(room, complaintCount, threshold = CONFIG.complaintThres
     };
   }
   return { spinNumber: null, allowed: false, reason: "The result is final." };
+}
+
+/** Tasks can change until the first spin. Mirrors the check in update_tasks. */
+export function tasksEditable(room) {
+  return room?.status === "lobby" && room?.spins_used === 0;
 }

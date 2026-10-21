@@ -1,7 +1,8 @@
 // DOM rendering for both views. User-supplied text is always set with textContent.
 
 import { CONFIG } from "./config.js";
-import { spinRule } from "./domain.js";
+import { DEVICES, BROWSERS, USER_LEVELS, THEMES } from "./tasks.js";
+import { spinRule, tasksEditable, isDefaultTaskList } from "./domain.js";
 import { drawWheel } from "./reveal.js";
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +23,17 @@ export const els = {
   complaints: $("complaints"), complaintCount: $("complaint-count"), complaintHint: $("complaint-hint"),
   complainBtn: $("complain-btn"), respinBtn: $("respin-btn"),
   peopleSummary: $("people-summary"), peopleList: $("people-list"),
+  formTasks: $("form-tasks"), formTasksSummary: $("form-tasks-summary"), formTasksToggle: $("form-tasks-toggle"),
+  formTasksBody: $("form-tasks-body"), formTaskTools: $("form-task-tools"), formTaskList: $("form-task-list"),
+  roomTasks: $("room-tasks"), roomTasksSummary: $("room-tasks-summary"), roomTasksHint: $("room-tasks-hint"),
+  roomTaskTools: $("room-task-tools"), roomTaskList: $("room-task-list"),
+  taskDialog: $("task-dialog"), taskForm: $("task-form"), taskDialogTitle: $("task-dialog-title"),
+  taskWhat: $("task-what"), taskWhatError: $("task-what-error"),
+  taskTeamChips: $("task-team-chips"), taskTeamError: $("task-team-error"),
+  taskThemeChips: $("task-theme-chips"), taskThemeError: $("task-theme-error"),
+  taskDevicesChips: $("task-devices-chips"), taskDevicesError: $("task-devices-error"),
+  taskBrowsersChips: $("task-browsers-chips"), taskUsersChips: $("task-users-chips"),
+  taskFormError: $("task-form-error"), taskCancel: $("task-cancel"), taskSave: $("task-save"),
   announcer: $("announcer")
 };
 
@@ -37,8 +49,16 @@ function el(tag, className, text) {
 const SVG_NS = "http://www.w3.org/2000/svg";
 const ICONS = {
   phone: "M8.5 2.5h7a2 2 0 0 1 2 2v15a2 2 0 0 1-2 2h-7a2 2 0 0 1-2-2v-15a2 2 0 0 1 2-2Zm2.5 16h2",
-  desktop: "M3.5 4.5h17v11h-17zM8.5 20h7M12 15.5V20"
+  desktop: "M3.5 4.5h17v11h-17zM8.5 20h7M12 15.5V20",
+  globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3.5 12h17M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9s1.2-6.5 3.6-9Z",
+  person: "M12 11.5a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5ZM4.75 20.25c.9-3.4 3.75-5.25 7.25-5.25s6.35 1.85 7.25 5.25",
+  pencil: "M14.5 5.5l4 4M4.5 19.5l1-4.5L16 4.5a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L9 18.5l-4.5 1Z",
+  trash: "M4.5 6.5h15M9.5 6.5v-2h5v2M6.5 6.5l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-12.1M10 10.5v5.5M14 10.5v5.5"
 };
+
+const labelIn = (options, value) => options.find((o) => o.value === value)?.label ?? value;
+const labelsIn = (options, values) => values.map((v) => labelIn(options, v));
+const PHONE_VALUES = ["android", "ios"];
 // Filled circle + glyph, in the style of SF Symbols' *.circle.fill
 const STATUS_GLYPHS = {
   check: "M6.2 10.3l2.6 2.6 5-5.6",
@@ -134,6 +154,7 @@ export function renderForm({ mode, code = null, profile = null }) {
     els.formLede.textContent = "Join a room, spin once, and every QA task gets an owner.";
     els.formSubmit.textContent = "Create room";
   }
+  els.formTasks.hidden = mode !== "create";
   els.formSubmit.dataset.label = els.formSubmit.textContent;
   const form = els.form;
   form.reset();
@@ -181,6 +202,320 @@ export function setFormBusy(busy, label) {
   els.formSubmit.textContent = busy ? label : els.formSubmit.dataset.label || els.formSubmit.textContent;
 }
 
+// ------------------------------------------------------------------ task lists
+
+/** "Critical User Flows, E3DC, Android and iOS" — for button labels and announcements. */
+export function describeTask(t) {
+  const parts = [t.what, labelIn(THEMES, t.theme), labelsIn(DEVICES, t.devices).join(" and ")];
+  if (t.browsers.length) parts.push(labelsIn(BROWSERS, t.browsers).join(" and "));
+  return parts.join(", ");
+}
+
+function tasksSummary(tasks) {
+  return `${plural(tasks.length, "task")} · ${isDefaultTaskList(tasks) ? "default set" : "edited"}`;
+}
+
+function metaItem(iconName, text) {
+  const item = el("span", "meta-item");
+  item.append(icon(iconName, "icon icon-stroke"), document.createTextNode(text));
+  return item;
+}
+
+function iconButton(iconName, label, action, taskId) {
+  const button = el("button", "icon-btn");
+  button.type = "button";
+  button.dataset.action = action;
+  button.dataset.taskId = taskId;
+  button.setAttribute("aria-label", label);
+  const idle = el("span", "when-idle");
+  idle.append(icon(iconName, "icon icon-stroke"));
+  button.append(idle);
+  return button;
+}
+
+function taskRow(t, { editable, busy, lastOne }) {
+  const li = el("li", "task-row");
+  li.dataset.taskId = t.id;
+
+  const main = el("div", "task-main");
+  const title = el("div", "task-title");
+  title.append(el("span", "task-name", t.what), el("span", "tag tag-theme", labelIn(THEMES, t.theme)));
+
+  const meta = el("div", "task-meta");
+  if (t.devices.includes("desktop")) meta.append(metaItem("desktop", "Desktop"));
+  const phones = t.devices.filter((d) => PHONE_VALUES.includes(d));
+  if (phones.length) meta.append(metaItem("phone", labelsIn(DEVICES, phones).join(", ")));
+  if (t.browsers.length) meta.append(metaItem("globe", labelsIn(BROWSERS, t.browsers).join(", ")));
+  if (t.users.length) meta.append(metaItem("person", labelsIn(USER_LEVELS, t.users).join(", ")));
+  main.append(title, meta);
+  li.append(main);
+
+  if (editable) {
+    const description = describeTask(t);
+    const edit = iconButton("pencil", `Edit ${description}`, "edit", t.id);
+    const del = iconButton("trash", `Delete ${description}`, "delete", t.id);
+    del.classList.add("icon-btn-danger", "btn-confirmable");
+    del.append(el("span", "when-armed", "Delete"));
+    edit.disabled = busy;
+    del.disabled = busy || lastOne;
+    if (lastOne) del.title = "A room needs at least one task.";
+    const actions = el("div", "task-actions");
+    actions.append(edit, del);
+    li.append(actions);
+  }
+  return li;
+}
+
+const listKeys = new WeakMap();
+
+/**
+ * Render tasks grouped by team ("All teams" first, then the configured teams).
+ * Keyed, so presence updates don't rebuild the list (and don't drop an armed Delete).
+ */
+function renderTaskList(container, tasks, { editable, busy }) {
+  const key = JSON.stringify([tasks, editable, busy, CONFIG.teams]);
+  if (listKeys.get(container) === key) return;
+  listKeys.set(container, key);
+
+  const groups = [{ team: null, label: "All teams" }, ...CONFIG.teams.map((team) => ({ team, label: team }))];
+  for (const t of tasks) {
+    if (t.team !== null && !groups.some((g) => g.team === t.team)) groups.push({ team: t.team, label: t.team });
+  }
+  const sections = [];
+  for (const group of groups) {
+    const items = tasks.filter((t) => t.team === group.team);
+    if (items.length === 0) continue;
+    const section = el("section", "task-group");
+    const head = el("h3", "task-group-title");
+    if (group.team === null) head.append(el("span", "task-group-name", group.label));
+    else {
+      const badge = el("span", "team-badge", group.label);
+      badge.dataset.team = group.team;
+      head.append(badge);
+    }
+    head.append(el("span", "task-group-count", String(items.length)));
+    head.setAttribute("aria-label", `${group.team === null ? "All teams" : `Team ${group.label}`}, ${plural(items.length, "task")}`);
+    const list = el("ul", "group task-rows");
+    list.append(...items.map((t) => taskRow(t, { editable, busy, lastOne: tasks.length === 1 })));
+    section.append(head, list);
+    sections.push(section);
+  }
+  container.replaceChildren(...sections);
+}
+
+function renderTaskTools(tools, tasks, busy) {
+  const add = tools.querySelector('[data-action="add"]');
+  const reset = tools.querySelector('[data-action="reset"]');
+  const full = tasks.length >= CONFIG.maxTasks;
+  add.disabled = busy || full;
+  add.title = full ? `A room can have at most ${CONFIG.maxTasks} tasks.` : "";
+  const isDefault = isDefaultTaskList(tasks);
+  reset.disabled = busy || isDefault;
+  reset.title = isDefault ? "These are already the default tasks." : "";
+  if (reset.disabled) disarm(reset);
+}
+
+/** The task section of the create form. */
+export function renderFormTasks({ tasks, open }) {
+  els.formTasksSummary.textContent = tasksSummary(tasks);
+  els.formTasksToggle.textContent = open ? "Hide" : "Review";
+  els.formTasksToggle.setAttribute("aria-expanded", String(open));
+  els.formTasksBody.hidden = !open;
+  if (!open) return;
+  renderTaskTools(els.formTaskTools, tasks, false);
+  renderTaskList(els.formTaskList, tasks, { editable: true, busy: false });
+}
+
+/** The task shown after `taskId` (or before it, if it is the last row), in display order. */
+export function adjacentTaskId(scope, taskId) {
+  const list = scope === "draft" ? els.formTaskList : els.roomTaskList;
+  const ids = Array.from(list.querySelectorAll("li.task-row"), (li) => li.dataset.taskId);
+  const i = ids.indexOf(taskId);
+  if (i < 0) return null;
+  return ids[i + 1] ?? ids[i - 1] ?? null;
+}
+
+/** Focus a task's button after the list changed; falls back to "Add task". */
+export function focusTask(scope, taskId, action = "edit") {
+  const [list, tools] = scope === "draft" ? [els.formTaskList, els.formTaskTools] : [els.roomTaskList, els.roomTaskTools];
+  const target = taskId ? list.querySelector(`button[data-task-id="${CSS.escape(taskId)}"][data-action="${action}"]`) : null;
+  const fallback = tools.querySelector('[data-action="add"]');
+  const node = target && !target.disabled ? target : fallback && !fallback.disabled && !tools.hidden ? fallback : null;
+  node?.focus();
+}
+
+// ---- two-step confirm for Delete and Reset
+
+const armTimers = new WeakMap();
+
+function disarm(button) {
+  if (button.dataset.armed !== "true") return;
+  delete button.dataset.armed;
+  clearTimeout(armTimers.get(button));
+  if (button.dataset.idleLabel) {
+    button.setAttribute("aria-label", button.dataset.idleLabel);
+    delete button.dataset.idleLabel;
+  }
+}
+
+/**
+ * First press arms the button (it turns red and asks for a second press); returns false.
+ * A second press within 4 seconds returns true. Leaving the button disarms it.
+ */
+export function confirmPress(button) {
+  if (button.dataset.armed === "true") {
+    disarm(button);
+    return true;
+  }
+  for (const other of document.querySelectorAll('[data-armed="true"]')) disarm(other);
+  button.dataset.armed = "true";
+  const label = button.getAttribute("aria-label");
+  if (label) {
+    button.dataset.idleLabel = label;
+    button.setAttribute("aria-label", `Confirm: ${label.charAt(0).toLowerCase()}${label.slice(1)}`);
+  }
+  armTimers.set(button, setTimeout(() => disarm(button), 4000));
+  button.addEventListener("blur", () => disarm(button), { once: true });
+  announce("Press again to confirm.");
+  return false;
+}
+
+// ------------------------------------------------------------------ task editor
+
+let chipsBuilt = false;
+
+function chip(type, name, value, label) {
+  const wrap = el("label", "chip");
+  const input = document.createElement("input");
+  input.type = type;
+  input.name = name;
+  input.value = value;
+  wrap.append(input, el("span", null, label));
+  return wrap;
+}
+
+function buildTaskChips() {
+  if (chipsBuilt) return;
+  chipsBuilt = true;
+  els.taskTeamChips.append(chip("radio", "team", "", "All teams"), ...CONFIG.teams.map((t) => chip("radio", "team", t, t)));
+  els.taskThemeChips.append(...THEMES.map((o) => chip("radio", "theme", o.value, o.label)));
+  els.taskDevicesChips.append(...DEVICES.map((o) => chip("checkbox", "devices", o.value, o.label)));
+  els.taskBrowsersChips.append(...BROWSERS.map((o) => chip("checkbox", "browsers", o.value, o.label)));
+  els.taskUsersChips.append(...USER_LEVELS.map((o) => chip("checkbox", "users", o.value, o.label)));
+}
+
+/** Chips for values this task has that the option lists don't offer, so editing keeps them. */
+function addExtraChips(task) {
+  for (const extra of els.taskForm.querySelectorAll(".chip-extra")) extra.remove();
+  const add = (container, type, name, options, values) => {
+    for (const value of values) {
+      if (!value || options.includes(value)) continue;
+      const extra = chip(type, name, value, value);
+      extra.classList.add("chip-extra");
+      container.append(extra);
+    }
+  };
+  add(els.taskTeamChips, "radio", "team", CONFIG.teams, task.team ? [task.team] : []);
+  add(els.taskThemeChips, "radio", "theme", THEMES.map((o) => o.value), task.theme ? [task.theme] : []);
+  add(els.taskBrowsersChips, "checkbox", "browsers", BROWSERS.map((o) => o.value), task.browsers);
+  add(els.taskUsersChips, "checkbox", "users", USER_LEVELS.map((o) => o.value), task.users);
+}
+
+export function openTaskEditor({ task, isNew }) {
+  buildTaskChips();
+  addExtraChips(task);
+  const form = els.taskForm;
+  form.reset();
+  els.taskDialogTitle.textContent = isNew ? "New task" : "Edit task";
+  els.taskSave.textContent = isNew ? "Add task" : "Save";
+  els.taskSave.dataset.label = els.taskSave.textContent;
+  form.elements.what.value = task.what;
+  for (const input of form.querySelectorAll("input[type=radio], input[type=checkbox]")) {
+    const value = input.name === "team" ? task.team ?? "" : task[input.name];
+    input.checked = Array.isArray(value) ? value.includes(input.value) : value === input.value;
+  }
+  syncSelectAll();
+  setTaskFormErrors({}, { focus: false });
+  setTaskFormError(null);
+  setTaskFormBusy(false);
+  if (!els.taskDialog.open) els.taskDialog.showModal();
+  els.taskDialog.querySelector(".sheet-body").scrollTop = 0;
+  els.taskWhat.focus();
+}
+
+/**
+ * The + beside Devices / Browsers / User levels. When every option in its group is already
+ * selected it dims (aria-disabled, so it keeps keyboard focus instead of dropping it).
+ */
+export function syncSelectAll() {
+  for (const button of els.taskForm.querySelectorAll("[data-select-all]")) {
+    const inputs = Array.from(els.taskForm.querySelectorAll(`input[name="${button.dataset.selectAll}"]`));
+    const all = inputs.length > 0 && inputs.every((i) => i.checked);
+    button.setAttribute("aria-disabled", String(all));
+    button.title = all ? "All selected" : "Select all";
+  }
+}
+
+/** Select every option in a group (including values only this task has). Returns false if nothing changed. */
+export function selectAllChips(name) {
+  const inputs = Array.from(els.taskForm.querySelectorAll(`input[name="${name}"]`));
+  if (inputs.every((i) => i.checked)) return false;
+  for (const input of inputs) input.checked = true;
+  syncSelectAll();
+  const label = els.taskForm.querySelector(`[data-select-all="${name}"]`)?.getAttribute("aria-label").replace(/^Select all /, "");
+  announce(`All ${label} selected.`);
+  return true;
+}
+
+export function readTaskForm() {
+  const form = els.taskForm;
+  const checked = (name) => Array.from(form.querySelectorAll(`input[name="${name}"]:checked`), (i) => i.value);
+  return {
+    what: form.elements.what.value,
+    team: checked("team")[0] ?? "",
+    theme: checked("theme")[0] ?? null,
+    devices: checked("devices"),
+    browsers: checked("browsers"),
+    users: checked("users")
+  };
+}
+
+export function setTaskFormErrors(errors, { focus = true } = {}) {
+  const pairs = [
+    [els.taskWhatError, errors.what], [els.taskTeamError, errors.team],
+    [els.taskThemeError, errors.theme], [els.taskDevicesError, errors.devices]
+  ];
+  for (const [node, message] of pairs) {
+    node.hidden = !message;
+    node.textContent = message || "";
+  }
+  els.taskWhat.setAttribute("aria-invalid", errors.what ? "true" : "false");
+  if (!focus) return;
+  const first = errors.what ? els.taskWhat
+    : errors.team ? els.taskTeamChips.querySelector("input")
+    : errors.theme ? els.taskThemeChips.querySelector("input")
+    : errors.devices ? els.taskDevicesChips.querySelector("input") : null;
+  first?.focus();
+}
+
+export function setTaskFormError(message) {
+  els.taskFormError.hidden = !message;
+  els.taskFormError.textContent = message || "";
+}
+
+export function setTaskFormBusy(busy, label) {
+  els.taskForm.dataset.busy = busy ? "true" : "false";
+  els.taskSave.disabled = busy;
+  els.taskCancel.disabled = busy;
+  els.taskSave.textContent = busy ? label : els.taskSave.dataset.label || els.taskSave.textContent;
+}
+
+export const taskEditorBusy = () => els.taskForm.dataset.busy === "true";
+
+export function closeTaskEditor() {
+  if (els.taskDialog.open) els.taskDialog.close();
+}
+
 // ------------------------------------------------------------------ room
 
 let wheelKey = null;
@@ -204,6 +539,13 @@ function moderatorCanAct(state) {
   return state.connection === "connected" && state.synced && state.presenceReady && !state.busy && !state.revealing;
 }
 
+/** Whether this browser may change the room's tasks right now (presence isn't needed for that). */
+export function canEditRoomTasks(state) {
+  const snap = state.snapshot;
+  return Boolean(snap) && snap.room.host_user_id === state.me && tasksEditable(snap.room)
+    && state.connection === "connected" && state.synced && !state.busy && !state.revealing && state.stageSpin === 0;
+}
+
 function isOnline(state, userId) {
   return userId === state.me ? state.connection === "connected" : state.online.has(userId);
 }
@@ -215,7 +557,26 @@ export function renderRoom(state) {
   renderAlert(state.alert);
   renderPeople(state);
   renderStage(state);
+  renderRoomTasks(state);
   renderComplaints(state);
+}
+
+function renderRoomTasks(state) {
+  const { room } = state.snapshot;
+  const visible = tasksEditable(room) && state.stageSpin === 0 && !state.revealing;
+  els.roomTasks.hidden = !visible;
+  if (!visible) return;
+
+  const isHost = room.host_user_id === state.me;
+  const canEdit = canEditRoomTasks(state);
+  els.roomTasksSummary.textContent = tasksSummary(room.tasks);
+  els.roomTasksHint.textContent = !isHost
+    ? "The moderator can change these until the wheel spins."
+    : state.busy === "tasks" ? "Saving the tasks…"
+    : "You can change the tasks until you spin. Everyone in the room sees changes right away.";
+  els.roomTaskTools.hidden = !isHost;
+  if (isHost) renderTaskTools(els.roomTaskTools, room.tasks, !canEdit);
+  renderTaskList(els.roomTaskList, room.tasks, { editable: isHost, busy: !canEdit });
 }
 
 function renderConnection(state) {
@@ -321,6 +682,7 @@ function renderWheelArea(state) {
 
 function moderatorStatus(state) {
   if (state.busy === "spin") return "Saving the spin…";
+  if (state.busy === "tasks") return "Saving the tasks…";
   if (state.connection === "connecting") return "Connecting to the room…";
   if (state.connection === "reconnecting") return "Reconnecting. Spinning is paused until the room is back in sync.";
   if (!state.synced) return "Syncing the room…";
@@ -387,7 +749,9 @@ function resultRow(a, me) {
   const tr = el("tr", isMine ? "is-mine" : a.participant_id === null ? "is-unassigned" : "");
   tr.setAttribute("role", "row");
 
-  const what = el("span", "task-what", t.what);
+  const what = el("span", "task-what-box");
+  what.append(el("span", "task-what", t.what));
+  if (t.users.length) what.append(el("span", "task-users", labelsIn(USER_LEVELS, t.users).join(", ")));
   const assignee = el("span", "assignee");
   if (a.participant_id === null) {
     assignee.append(el("span", "unassigned", "Unassigned"), el("span", "reason", a.reason || "No compatible person was online."));
@@ -404,9 +768,9 @@ function resultRow(a, me) {
 
   tr.append(
     cell("Task", what, "c-what"),
-    cell("Theme", t.theme),
-    cell("Device", t.device),
-    cell("Platform", t.platform),
+    cell("Theme", labelIn(THEMES, t.theme)),
+    cell("Devices", labelsIn(DEVICES, t.devices).join(", ")),
+    cell("Browsers", t.browsers.length ? labelsIn(BROWSERS, t.browsers).join(", ") : "—"),
     cell("Task team", t.team ?? "Any"),
     cell("Assigned to", assignee, "c-assignee"),
     cell("Their team", a.participant ? a.participant.team : "—"),

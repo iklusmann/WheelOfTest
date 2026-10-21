@@ -15,7 +15,11 @@ export const CONFIG = {
   // The database enforces these two. Keep them equal to
   // public.wot_room_capacity() and public.wot_complaint_threshold() in supabase/schema.sql.
   roomCapacity: 30,
-  complaintThreshold: 2
+  complaintThreshold: 2,
+
+  // Per-room task list limits. The database enforces them in public._wot_clean_tasks().
+  maxTasks: 50,
+  taskNameMaxLength: 60
 };
 
 export function isConfigured() {

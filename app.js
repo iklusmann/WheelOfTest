@@ -1,8 +1,11 @@
 // Bootstrap, routing by ?room=, and wiring between domain, backend, UI and reveal.
 
 import { CONFIG, isConfigured } from "./config.js";
-import { TASKS } from "./tasks.js";
-import { validateProfile, normalizeRoomCode, assignTasks, spinRule } from "./domain.js";
+import { THEMES, defaultTasks } from "./tasks.js";
+import {
+  validateProfile, normalizeRoomCode, assignTasks, spinRule,
+  normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable
+} from "./domain.js";
 import * as backend from "./backend.js";
 import * as ui from "./ui.js";
 import { playReveal } from "./reveal.js";
@@ -18,13 +21,16 @@ const state = {
   connectionDetail: "",
   synced: false,             // room re-fetched since the last (re)subscribe
   presenceReady: false,      // at least one presence sync since the last (re)subscribe
-  busy: null,                // "spin" | "complain" | null
+  busy: null,                // "spin" | "complain" | "tasks" | null
   stageSpin: 0,              // spin shown on the stage; 0 = wheel
   revealing: false,
   mineOnly: false,
   showFirst: false,
   alert: null,
-  formMode: "create"
+  formMode: "create",
+  draftTasks: defaultTasks(),  // create form: the tasks the new room will start with
+  draftOpen: false,            // create form: task list expanded
+  editor: null                 // open task editor: { scope: "draft" | "room", taskId: string | null }
 };
 
 let subscription = null;
@@ -61,7 +67,26 @@ function roomUrl(code) {
 }
 
 const latestSpin = (snap) => snap.spins.reduce((max, s) => Math.max(max, s.spin_number), 0);
-const render = () => { if (subscription && state.snapshot) ui.renderRoom(state); };
+
+function render() {
+  if (!subscription || !state.snapshot) return;
+  // The room left the lobby (e.g. the moderator spun in another tab): the tasks are locked now.
+  if (state.editor?.scope === "room" && !tasksEditable(state.snapshot.room)) closeEditor();
+  ui.renderRoom(state);
+}
+
+/** Rooms created before tasks were editable store an older task shape; read both. */
+function normalizeSnapshot(snap) {
+  if (!snap?.room) return snap;
+  return {
+    ...snap,
+    room: { ...snap.room, tasks: (snap.room.tasks ?? []).map(normalizeTask) },
+    spins: (snap.spins ?? []).map((s) => ({
+      ...s,
+      assignments: (s.assignments ?? []).map((a) => ({ ...a, task: normalizeTask(a.task) }))
+    }))
+  };
+}
 
 // ------------------------------------------------------------------ routing
 
@@ -73,7 +98,10 @@ async function route() {
   const raw = new URLSearchParams(location.search).get("room");
   if (raw === null) {
     state.formMode = "create";
-    return ui.renderForm({ mode: "create", profile: loadProfile() });
+    state.draftTasks = defaultTasks();  // every new room starts from the defaults
+    state.draftOpen = false;
+    ui.renderForm({ mode: "create", profile: loadProfile() });
+    return renderDraft();
   }
 
   const code = normalizeRoomCode(raw);
@@ -108,11 +136,16 @@ async function onFormSubmit(event) {
 
   const mode = state.formMode;
   const code = state.code;
+  const tasks = state.draftTasks;
+  if (mode === "create") {
+    const check = validateTaskList(tasks);
+    if (!check.ok) return ui.setFormError(check.error);
+  }
   ui.setFormBusy(true, mode === "create" ? "Creating room…" : "Joining…");
   try {
     state.me = await backend.ensureSession();
     const snap = mode === "create"
-      ? await backend.createRoom(result.value, TASKS)
+      ? await backend.createRoom(result.value, tasks)
       : await backend.joinRoom(code, result.value);
     saveProfile(result.value);
     if (mode === "create") history.pushState(null, "", roomUrl(snap.room.code));
@@ -127,7 +160,9 @@ async function onFormSubmit(event) {
 
 // ------------------------------------------------------------------ room lifecycle
 
-function enterRoom(snap) {
+function enterRoom(raw) {
+  closeEditor();
+  const snap = normalizeSnapshot(raw);
   Object.assign(state, {
     snapshot: snap,
     code: snap.room.code,
@@ -163,6 +198,7 @@ function enterRoom(snap) {
 }
 
 async function leaveRoom() {
+  closeEditor();
   session += 1;
   refreshJob = null;
   refreshRunning = false;  // a loop from the old room exits on its own (session mismatch)
@@ -237,9 +273,10 @@ async function runRefresh() {
   }
 }
 
-function applySnapshot(snap, reason) {
+function applySnapshot(raw, reason) {
   const prev = state.snapshot;
-  if (prev && snap.room.state_version <= prev.room.state_version) return;
+  if (prev && raw.room.state_version <= prev.room.state_version) return;
+  const snap = normalizeSnapshot(raw);
   state.snapshot = snap;
   const latest = latestSpin(snap);
   if (!state.revealing) {
@@ -338,6 +375,178 @@ async function onComplain() {
   }
 }
 
+// ------------------------------------------------------------------ tasks
+// Two lists can be edited: the create form's draft (local until "Create room") and the
+// room's own list (saved through update_tasks, moderator only, until the first spin).
+
+let editorReturn = null;  // what to focus once the editor has closed: { scope, taskId }
+let editorOpener = null;  // the button that opened the editor (the browser returns focus there on close)
+
+const currentTasks = (scope) => (scope === "draft" ? state.draftTasks : state.snapshot?.room.tasks ?? []);
+const blankTask = () => ({ what: "", theme: THEMES[0].value, team: null, devices: ["desktop"], browsers: [], users: [] });
+
+function renderDraft() {
+  ui.renderFormTasks({ tasks: state.draftTasks, open: state.draftOpen });
+}
+
+function openEditor(scope, taskId) {
+  if (state.editor) return;
+  if (scope === "room" && !ui.canEditRoomTasks(state)) return;
+  const tasks = currentTasks(scope);
+  if (taskId === null && tasks.length >= CONFIG.maxTasks) return;
+  const task = taskId === null ? blankTask() : tasks.find((t) => t.id === taskId);
+  if (!task) return;
+  state.editor = { scope, taskId };
+  editorOpener = document.activeElement;
+  ui.openTaskEditor({ task, isNew: taskId === null });
+}
+
+function closeEditor(returnTo = null) {
+  if (!state.editor) return;
+  editorReturn = returnTo ?? { scope: state.editor.scope, taskId: state.editor.taskId };
+  state.editor = null;
+  ui.closeTaskEditor();
+}
+
+function onEditorClosed() {
+  if (ui.els.taskDialog.open) return;
+  const target = editorReturn ?? (state.editor ? { scope: state.editor.scope, taskId: state.editor.taskId } : null);
+  state.editor = null;   // also covers Escape, which closes the dialog by itself
+  editorReturn = null;
+  // The close event arrives a moment after the dialog closes. Only place focus if it is still
+  // where closing left it (nowhere, or back on the opener); never pull it back from where the
+  // person has already moved.
+  const current = document.activeElement;
+  const untouched = !current || current === document.body || current === editorOpener || ui.els.taskDialog.contains(current);
+  editorOpener = null;
+  if (target && untouched) ui.focusTask(target.scope, target.taskId);
+}
+
+/** Save a new task list for the room. Resolves to { ok } or { ok: false, error, stale }. */
+async function saveRoomTasks(next) {
+  const snap = state.snapshot;
+  if (!snap || !ui.canEditRoomTasks(state)) return { ok: false, error: "The room is still syncing. Try again in a moment." };
+  state.busy = "tasks";
+  state.alert = null;
+  render();
+  const mySession = session;
+  try {
+    const updated = await backend.updateTasks(snap.room.id, next);
+    if (mySession !== session) return { ok: false, stale: true };
+    state.busy = null;
+    applySnapshot(updated, "action");
+    render();
+    return { ok: true };
+  } catch (error) {
+    if (mySession !== session) return { ok: false, stale: true };
+    state.busy = null;
+    if (error.code === "tasks_locked" || error.code === "not_host") {
+      state.alert = error.message;
+      refresh("subscribe");
+    }
+    render();
+    return { ok: false, error: error.message, code: error.code };
+  }
+}
+
+async function onTaskFormSubmit(event) {
+  event.preventDefault();
+  const editor = state.editor;
+  if (!editor || ui.taskEditorBusy()) return;
+  const tasks = currentTasks(editor.scope);
+  const original = editor.taskId === null ? null : tasks.find((t) => t.id === editor.taskId) ?? null;
+  const result = validateTask(ui.readTaskForm(), { keep: original });
+  ui.setTaskFormErrors(result.errors);
+  ui.setTaskFormError(null);
+  if (!result.ok) return;
+
+  const editing = original !== null;
+  if (!editing && tasks.length >= CONFIG.maxTasks) {
+    return ui.setTaskFormError(`A room can have at most ${CONFIG.maxTasks} tasks.`);
+  }
+  const id = editing ? editor.taskId : newTaskId(tasks.map((t) => t.id), secureRandom);
+  const task = { id, ...result.value };
+  const next = editing ? tasks.map((t) => (t.id === id ? task : t)) : [...tasks, task];
+  const message = editing ? "Task saved." : "Task added.";
+
+  if (editor.scope === "draft") {
+    state.draftTasks = next;
+    renderDraft();
+    closeEditor({ scope: "draft", taskId: id });
+    ui.announce(message);
+    return;
+  }
+
+  ui.setTaskFormBusy(true, "Saving…");
+  const outcome = await saveRoomTasks(next);
+  if (state.editor !== editor) return;  // closed meanwhile: the room locked or we left it
+  ui.setTaskFormBusy(false);
+  if (outcome.ok) {
+    closeEditor({ scope: "room", taskId: id });
+    ui.announce(message);
+  } else {
+    ui.setTaskFormError(`Couldn't save the task: ${outcome.error}`);
+  }
+}
+
+async function deleteTask(scope, taskId) {
+  const tasks = currentTasks(scope);
+  const index = tasks.findIndex((t) => t.id === taskId);
+  if (index < 0) return;
+  const next = tasks.filter((t) => t.id !== taskId);
+  if (!validateTaskList(next).ok) return;  // the last task can't be deleted (its button is disabled)
+  const neighbour = ui.adjacentTaskId(scope, taskId);  // where focus goes, in the order shown on screen
+  const message = `Deleted ${ui.describeTask(tasks[index])}.`;
+
+  if (scope === "draft") {
+    state.draftTasks = next;
+    renderDraft();
+    ui.focusTask("draft", neighbour);
+    ui.announce(message);
+    return;
+  }
+  const outcome = await saveRoomTasks(next);
+  if (outcome.ok) {
+    ui.focusTask("room", neighbour);
+    ui.announce(message);
+  } else if (!outcome.stale && !state.alert) {
+    state.alert = `Couldn't delete the task: ${outcome.error}`;
+    render();
+  }
+}
+
+async function resetTasks(scope) {
+  const message = "Back to the default tasks.";
+  if (scope === "draft") {
+    state.draftTasks = defaultTasks();
+    renderDraft();
+    ui.focusTask("draft", null);
+    ui.announce(message);
+    return;
+  }
+  const outcome = await saveRoomTasks(defaultTasks());
+  if (outcome.ok) {
+    ui.focusTask("room", null);
+    ui.announce(message);
+  } else if (!outcome.stale && !state.alert) {
+    state.alert = `Couldn't reset the tasks: ${outcome.error}`;
+    render();
+  }
+}
+
+/** Add / Edit / Delete / Reset buttons in either task list (event delegation). */
+function onTaskAreaClick(scope) {
+  return (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button || button.disabled) return;
+    const { action, taskId } = button.dataset;
+    if (action === "add") openEditor(scope, null);
+    else if (action === "edit") openEditor(scope, taskId);
+    else if (action === "delete") { if (ui.confirmPress(button)) deleteTask(scope, taskId); }
+    else if (action === "reset") { if (ui.confirmPress(button)) resetTasks(scope); }
+  };
+}
+
 async function onCopyLink() {
   const url = roomUrl(state.code);
   try {
@@ -358,6 +567,19 @@ ui.els.complainBtn.addEventListener("click", onComplain);
 ui.els.copyLink.addEventListener("click", onCopyLink);
 ui.els.mineOnly.addEventListener("change", () => { state.mineOnly = ui.els.mineOnly.checked; render(); });
 ui.els.showFirst.addEventListener("change", () => { state.showFirst = ui.els.showFirst.checked; render(); });
+
+ui.els.formTasksToggle.addEventListener("click", () => { state.draftOpen = !state.draftOpen; renderDraft(); });
+ui.els.formTasks.addEventListener("click", onTaskAreaClick("draft"));
+ui.els.roomTasks.addEventListener("click", onTaskAreaClick("room"));
+ui.els.taskForm.addEventListener("submit", onTaskFormSubmit);
+ui.els.taskForm.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-select-all]");
+  if (button && button.getAttribute("aria-disabled") !== "true" && !ui.taskEditorBusy()) ui.selectAllChips(button.dataset.selectAll);
+});
+ui.els.taskForm.addEventListener("change", () => ui.syncSelectAll());
+ui.els.taskCancel.addEventListener("click", () => closeEditor());
+ui.els.taskDialog.addEventListener("cancel", (event) => { if (ui.taskEditorBusy()) event.preventDefault(); });
+ui.els.taskDialog.addEventListener("close", onEditorClosed);
 
 window.addEventListener("popstate", route);
 window.addEventListener("offline", () => { if (subscription) onConnection("reconnecting", "Your device is offline."); });

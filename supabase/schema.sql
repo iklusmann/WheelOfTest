@@ -5,9 +5,13 @@
 --
 -- Clients (anonymous sign-in users hold the `authenticated` role) can:
 --   * SELECT rows of rooms they are a member of (RLS),
---   * EXECUTE the five RPCs below.
+--   * EXECUTE the six RPCs below.
 -- Nothing else. All writes go through the RPCs, which take identity from
 -- auth.uid() and never from a parameter.
+--
+-- Upgrading from the version without editable tasks: just run this file again.
+-- Existing rooms keep their stored tasks; the old task shape (platform/device)
+-- is still understood everywhere, so old rooms behave exactly as before.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
@@ -135,51 +139,103 @@ begin
   );
 end $$;
 
+-- True when p_list is a JSON array of p_min..p_max distinct strings (1-40 chars each),
+-- all from p_allowed when that is given.
+create or replace function public._wot_is_string_list(p_list jsonb, p_min integer, p_max integer, p_allowed text[] default null)
+returns boolean language plpgsql immutable set search_path = '' as $$
+begin
+  if p_list is null or jsonb_typeof(p_list) <> 'array' then
+    return false;
+  end if;
+  if jsonb_array_length(p_list) not between p_min and p_max then
+    return false;
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(p_list) e
+    where jsonb_typeof(e) <> 'string'
+       or char_length(e #>> '{}') not between 1 and 40
+       or (p_allowed is not null and (e #>> '{}') <> all (p_allowed))
+  ) then
+    return false;
+  end if;
+  return (select count(distinct e) from jsonb_array_elements(p_list) e) = jsonb_array_length(p_list);
+end $$;
+
+-- A room's task list (1-50 tasks). Shape of one task:
+--   { id, what, theme, team: 'AF'|'CYD'|'PB'|null, devices: ['desktop'|'android'|'ios', ...] (1+),
+--     browsers: [text] (0-10), users: [text] (0-10) }
+-- Keep the limits equal to maxTasks and taskNameMaxLength in config.js.
 create or replace function public._wot_clean_tasks(p_tasks jsonb)
 returns jsonb language plpgsql immutable set search_path = '' as $$
 declare
   v_task jsonb;
+  v_what text;
   v_ids text[] := '{}';
   v_out jsonb := '[]'::jsonb;
 begin
-  if p_tasks is null or jsonb_typeof(p_tasks) <> 'array'
-     or jsonb_array_length(p_tasks) not between 1 and 50
-     or length(p_tasks::text) > 20000 then
+  if p_tasks is null or jsonb_typeof(p_tasks) <> 'array' or length(p_tasks::text) > 60000 then
     perform public._wot_fail('Task list is missing or too large.', 'invalid_tasks', '22023');
+  end if;
+  if jsonb_array_length(p_tasks) not between 1 and 50 then
+    perform public._wot_fail('A room needs 1 to 50 tasks.', 'invalid_tasks', '22023');
   end if;
   for v_task in select value from jsonb_array_elements(p_tasks) loop
     if jsonb_typeof(v_task) <> 'object'
        or jsonb_typeof(v_task -> 'id') is distinct from 'string'
        or char_length(v_task ->> 'id') not between 1 and 64
        or jsonb_typeof(v_task -> 'what') is distinct from 'string'
-       or char_length(v_task ->> 'what') not between 1 and 100
        or jsonb_typeof(v_task -> 'theme') is distinct from 'string'
        or char_length(v_task ->> 'theme') not between 1 and 40
-       or jsonb_typeof(v_task -> 'device') is distinct from 'string'
-       or char_length(v_task ->> 'device') not between 1 and 40
-       or coalesce(v_task ->> 'platform', '') not in ('desktop', 'mobile')
        or coalesce(jsonb_typeof(v_task -> 'team'), 'null') not in ('null', 'string')
        or (v_task ->> 'team') not in ('AF', 'CYD', 'PB')
-       or coalesce(jsonb_typeof(v_task -> 'users'), 'array') <> 'array'
-       or jsonb_array_length(coalesce(v_task -> 'users', '[]'::jsonb)) > 10
-       or exists (
-            select 1 from jsonb_array_elements(coalesce(v_task -> 'users', '[]'::jsonb)) u
-            where jsonb_typeof(u) <> 'string' or char_length(u #>> '{}') not between 1 and 40)
+       or not public._wot_is_string_list(v_task -> 'devices', 1, 3, array['desktop', 'android', 'ios'])
+       or not public._wot_is_string_list(coalesce(v_task -> 'browsers', '[]'::jsonb), 0, 10)
+       or not public._wot_is_string_list(coalesce(v_task -> 'users', '[]'::jsonb), 0, 10)
     then
       perform public._wot_fail('A task is malformed.', 'invalid_tasks', '22023');
+    end if;
+    v_what := regexp_replace(v_task ->> 'what', '^\s+|\s+$', '', 'g');
+    if char_length(v_what) not between 1 and 60 or v_what ~ '[\x01-\x1F\x7F]' then
+      perform public._wot_fail('Every task needs a name of 1 to 60 characters.', 'invalid_tasks', '22023');
     end if;
     if (v_task ->> 'id') = any (v_ids) then
       perform public._wot_fail('Task ids must be unique.', 'invalid_tasks', '22023');
     end if;
     v_ids := v_ids || (v_task ->> 'id');
     v_out := v_out || jsonb_build_array(jsonb_build_object(
-      'id', v_task -> 'id', 'what', v_task -> 'what', 'theme', v_task -> 'theme',
-      'device', v_task -> 'device', 'platform', v_task -> 'platform',
+      'id', v_task -> 'id', 'what', to_jsonb(v_what), 'theme', v_task -> 'theme',
       'team', coalesce(v_task -> 'team', 'null'::jsonb),
+      'devices', v_task -> 'devices',
+      'browsers', coalesce(v_task -> 'browsers', '[]'::jsonb),
       'users', coalesce(v_task -> 'users', '[]'::jsonb)));
   end loop;
   return v_out;
 end $$;
+
+-- The phones a task needs; the assignee must have at least one. Empty = no phone needed.
+-- Also reads the pre-editor shape (platform 'mobile' meant either phone).
+create or replace function public._wot_task_phones(p_task jsonb)
+returns text[] language sql immutable set search_path = '' as $$
+  select case
+    when jsonb_typeof(p_task -> 'devices') = 'array' then
+      array(select ph from unnest(array['android', 'ios']) with ordinality as x(ph, ord)
+            where (p_task -> 'devices') ? ph order by ord)
+    when (p_task ->> 'platform') = 'mobile' then array['android', 'ios']
+    else '{}'::text[]
+  end
+$$;
+
+-- Same text as unassignedReason() in domain.js.
+create or replace function public._wot_unassigned_reason(p_phones text[])
+returns text language sql immutable set search_path = '' as $$
+  select 'No one online has an '
+    || array_to_string(array(
+         select case ph when 'android' then 'Android' else 'iOS' end
+         from unnest(case when cardinality(p_phones) > 0 then p_phones else array['android', 'ios'] end)
+              with ordinality as x(ph, ord)
+         order by ord), ' or ')
+    || ' phone.'
+$$;
 
 -- The full room state a member sees. Called only from the RPCs below.
 create or replace function public._wot_snapshot(p_room_id uuid)
@@ -362,14 +418,25 @@ begin
     perform public._wot_fail('Assignments are malformed.', 'invalid_assignments', '22023');
   end if;
 
-  -- Every task in the room exactly once
+  -- Every task in the room exactly once. A mismatch usually means the moderator changed
+  -- the tasks in another tab, so the client is told to re-fetch.
   v_task_count := jsonb_array_length(v_room.tasks);
   if jsonb_array_length(p_assignments) <> v_task_count
      or (select count(distinct e ->> 'task_id')
          from jsonb_array_elements(p_assignments) e
          where (e ->> 'task_id') in (select t ->> 'id' from jsonb_array_elements(v_room.tasks) t)
         ) <> v_task_count then
-    perform public._wot_fail('Every task must be assigned exactly once.', 'invalid_assignments', '22023');
+    perform public._wot_fail('The task list changed. The room has been refreshed, so spin again.', 'stale_spin');
+  end if;
+  -- ...and the client assigned the tasks as they are stored now (an edit can keep the id).
+  if exists (
+    select 1
+    from jsonb_array_elements(p_assignments) e
+    join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
+    where public._wot_task_phones(e -> 'task') is distinct from public._wot_task_phones(t)
+       or (e -> 'task' ->> 'team') is distinct from (t ->> 'team')
+  ) then
+    perform public._wot_fail('The task list changed. The room has been refreshed, so spin again.', 'stale_spin');
   end if;
 
   -- Every assignee is a member of this room
@@ -382,25 +449,27 @@ begin
     perform public._wot_fail('Tasks can only go to people in this room.', 'invalid_assignments', '22023');
   end if;
 
-  -- Phone rule: no mobile task to someone with neither device
+  -- Phone rule: a task that needs a phone goes only to someone with one of those phones
   if exists (
     select 1
     from jsonb_array_elements(p_assignments) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
     join public.participants p on p.room_id = p_room_id and p.user_id::text = (e ->> 'participant_id')
-    where (t ->> 'platform') = 'mobile' and not (p.android or p.ios)
+    cross join lateral (select public._wot_task_phones(t) as phones) x
+    where cardinality(x.phones) > 0
+      and not ((p.android and 'android' = any (x.phones)) or (p.ios and 'ios' = any (x.phones)))
   ) then
-    perform public._wot_fail('Mobile tasks can only go to someone with an Android or iOS phone.', 'invalid_assignments', '22023');
+    perform public._wot_fail('A task that needs a phone went to someone without that phone.', 'invalid_assignments', '22023');
   end if;
 
-  -- Desktop tasks can always be assigned (the moderator is online), so they may not be left empty
+  -- Tasks that need no phone can always be assigned (the moderator is online), so they may not be left empty
   if exists (
     select 1
     from jsonb_array_elements(p_assignments) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
-    where (e ->> 'participant_id') is null and (t ->> 'platform') <> 'mobile'
+    where (e ->> 'participant_id') is null and cardinality(public._wot_task_phones(t)) = 0
   ) then
-    perform public._wot_fail('Desktop tasks cannot be left unassigned.', 'invalid_assignments', '22023');
+    perform public._wot_fail('Tasks that need no phone cannot be left unassigned.', 'invalid_assignments', '22023');
   end if;
 
   -- Store what the database knows, not the client's copies of names or tasks
@@ -412,7 +481,8 @@ begin
              jsonb_build_object('name', p.name, 'team', p.team, 'android', p.android, 'ios', p.ios) end,
            'team_match', case when p.user_id is null or (t.task ->> 'team') is null then null
                               else p.team = (t.task ->> 'team') end,
-           'reason', case when p.user_id is null then 'No one online has an Android or iOS phone.' end
+           'reason', case when p.user_id is null
+                          then public._wot_unassigned_reason(public._wot_task_phones(t.task)) end
          ) order by t.ord)
   into v_stored
   from jsonb_array_elements(v_room.tasks) with ordinality as t(task, ord)
@@ -461,6 +531,37 @@ begin
   return public._wot_snapshot(p_room_id);
 end $$;
 
+-- Replace the room's task list. Moderator only, and only before the first spin.
+-- Locks the room row like commit_spin, so an edit and a spin never interleave.
+create or replace function public.update_tasks(p_room_id uuid, p_tasks jsonb)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_uid uuid := auth.uid();
+  v_room public.rooms%rowtype;
+  v_tasks jsonb;
+begin
+  if v_uid is null then
+    perform public._wot_fail('You are not signed in.', 'not_signed_in', '42501');
+  end if;
+  select * into v_room from public.rooms where id = p_room_id for update;
+  if not found then
+    perform public._wot_fail('This room does not exist.', 'room_not_found');
+  end if;
+  if v_room.host_user_id <> v_uid then
+    perform public._wot_fail('Only the moderator can change the tasks.', 'not_host', '42501');
+  end if;
+  if v_room.status <> 'lobby' or v_room.spins_used <> 0 then
+    perform public._wot_fail('The wheel has already spun, so the tasks can no longer change.', 'tasks_locked');
+  end if;
+
+  v_tasks := public._wot_clean_tasks(p_tasks);
+  update public.rooms
+  set tasks = v_tasks, state_version = state_version + 1
+  where id = p_room_id;
+
+  return public._wot_snapshot(p_room_id);
+end $$;
+
 -- -----------------------------------------------------------------------------
 -- Row Level Security: members may read their room; nobody writes directly.
 -- -----------------------------------------------------------------------------
@@ -501,6 +602,9 @@ revoke all on function public._wot_normalize_code(text)         from public, ano
 revoke all on function public._wot_random_code()                from public, anon, authenticated;
 revoke all on function public._wot_clean_profile(jsonb)         from public, anon, authenticated;
 revoke all on function public._wot_clean_tasks(jsonb)           from public, anon, authenticated;
+revoke all on function public._wot_is_string_list(jsonb, integer, integer, text[]) from public, anon, authenticated;
+revoke all on function public._wot_task_phones(jsonb)           from public, anon, authenticated;
+revoke all on function public._wot_unassigned_reason(text[])    from public, anon, authenticated;
 revoke all on function public._wot_snapshot(uuid)               from public, anon, authenticated;
 
 revoke all on function public.is_room_member(uuid)              from public, anon, authenticated;
@@ -511,11 +615,13 @@ revoke all on function public.join_room(text, jsonb)                    from pub
 revoke all on function public.get_room(text)                            from public, anon, authenticated;
 revoke all on function public.commit_spin(uuid, integer, jsonb)         from public, anon, authenticated;
 revoke all on function public.complain(uuid)                            from public, anon, authenticated;
+revoke all on function public.update_tasks(uuid, jsonb)                 from public, anon, authenticated;
 grant execute on function public.create_room(jsonb, jsonb)              to authenticated;
 grant execute on function public.join_room(text, jsonb)                 to authenticated;
 grant execute on function public.get_room(text)                         to authenticated;
 grant execute on function public.commit_spin(uuid, integer, jsonb)      to authenticated;
 grant execute on function public.complain(uuid)                         to authenticated;
+grant execute on function public.update_tasks(uuid, jsonb)              to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Realtime: every RPC bumps rooms.state_version, so one UPDATE event per change.
