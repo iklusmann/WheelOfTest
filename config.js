@@ -34,12 +34,12 @@ function sessionLink(name, raw) {
   return { label: label || parsed.hostname, url: parsed.href };
 }
 
-export const CONFIG = {
-  supabaseUrl: ENV.SUPABASE_URL || "",
-  supabasePublishableKey: ENV.SUPABASE_PUBLISHABLE_KEY || "",
+const DEFAULT_SESSION_LINKS = [
+  "QA Testing Template and instructions | https://docs.e3dc.com/spaces/CLOUD/pages/220588941/QA+Testing",
+  "Release Changelog | https://docs.e3dc.com/spaces/CLOUD/pages/98239113/Changelog"
+];
 
-  teams: list(ENV.TEAM_OPTIONS).length ? list(ENV.TEAM_OPTIONS) : ["AF", "CYD", "PB"],
-  nameMaxLength: 40,
+th: 40,
 
   // Links the team uses in every test session (e.g. the test environment and the test cases).
   // Shown at the top of the room. Set SESSION_LINK_1 and SESSION_LINK_2 in .env.
@@ -47,12 +47,11 @@ export const CONFIG = {
     .map(([name, raw]) => sessionLink(name, raw))
     .filter(Boolean),
 
-  // The database enforces these two. Keep them equal to
-  // public.wot_room_capacity() and public.wot_complaint_threshold() in supabase/schema.sql.
-  roomCapacity: 30,
-  complaintThreshold: 2,
-
-  // Per-room task list limits. The database enforces them in public._wot_clean_tasks().
+  // The det SESSION_LINK_1 and SESSESSION_LINK_1 and SESSION_LINK_2 in .env override these defaults.
+  sessionLinks: [
+    ["SESSION_LINK_1", ENV.SESSION_LINK_1 || DEFAULT_SESSION_LINKS[0]],
+    ["SESSION_LINK_2", ENV.SESSION_LINK_2 || DEFAULT_SESSION_LINKS[1]]
+  e enforces them in public._wot_clean_tasks().
   maxTasks: 50,
   taskNameMaxLength: 60,
 
