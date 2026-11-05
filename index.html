@@ -130,6 +130,13 @@
     <!-- Room -->
     <section id="view-room" class="view view-room" hidden aria-labelledby="room-heading">
       <h1 id="room-heading" class="sr-only">Room</h1>
+
+      <!-- Links the team uses in every session (SESSION_LINK_1 / SESSION_LINK_2 in .env) -->
+      <nav id="session-links" class="group session-links" aria-label="Session links" hidden>
+        <span class="session-links-label">Links for this session</span>
+        <ul id="session-links-list" class="session-links-list"></ul>
+      </nav>
+
       <div class="room-grid">
         <div class="room-main">
           <p id="room-alert" class="notice notice-error" role="alert" hidden></p>
@@ -155,6 +162,7 @@
                 <div>
                   <h2 id="result-title" class="large-title" tabindex="-1">Result</h2>
                   <p id="my-count" class="my-count"></p>
+                  <p id="result-hint" class="footnote result-hint" hidden></p>
                 </div>
                 <div class="toggles">
                   <label class="inline-switch">
@@ -169,6 +177,14 @@
                   </label>
                 </div>
               </div>
+              <!-- Requests to take over a task, waiting for the moderator or the person who has it -->
+              <section id="takeovers" class="group takeovers" aria-labelledby="takeovers-title" hidden>
+                <div class="takeovers-head">
+                  <h3 id="takeovers-title" class="takeovers-title" tabindex="-1"></h3>
+                  <p id="takeovers-hint" class="footnote"></p>
+                </div>
+                <ul id="takeovers-list" class="takeovers-list"></ul>
+              </section>
               <p id="viewing-first" class="notice" hidden>This is the first spin. The second spin replaced it and is the final result.</p>
               <div class="group result-group">
                 <table id="result-table" class="result-table" role="table">

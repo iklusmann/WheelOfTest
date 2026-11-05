@@ -5,7 +5,7 @@ import { THEMES, BROWSERS, USER_LEVELS, defaultTasks } from "./tasks.js";
 import {
   validateProfile, normalizeRoomCode, assignTasks, spinRule,
   normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable,
-  withCriticalFlows, CRITICAL_FLOW_COUNT
+  withCriticalFlows, CRITICAL_FLOW_COUNT, takeoverChanges
 } from "./domain.js";
 import * as backend from "./backend.js";
 import * as ui from "./ui.js";
@@ -22,7 +22,7 @@ const state = {
   connectionDetail: "",
   synced: false,             // room re-fetched since the last (re)subscribe
   presenceReady: false,      // at least one presence sync since the last (re)subscribe
-  busy: null,                // "spin" | "complain" | "tasks" | null
+  busy: null,                // "spin" | "complain" | "tasks" | "takeover" | null
   stageSpin: 0,              // spin shown on the stage; 0 = wheel
   revealing: false,
   mineOnly: false,
@@ -38,6 +38,7 @@ let subscription = null;
 let session = 0;           // bumps whenever we leave a room, to drop stale async results
 let refreshJob = null;     // pending re-fetch: { animate, sync }
 let refreshRunning = false;
+let afterRefresh = null;   // runs once the next re-fetch has rendered (focus after a failed takeover action)
 const SYNC_ALERT = "Can't reach the server to update the room. Retrying…";
 
 // ------------------------------------------------------------------ utilities
@@ -76,7 +77,10 @@ function render() {
   ui.renderRoom(state);
 }
 
-/** Rooms created before tasks were editable store an older task shape; read both. */
+/**
+ * Rooms created before tasks were editable store an older task shape; read both. A database
+ * from before takeover requests sends no `requests` list; treat that as none.
+ */
 function normalizeSnapshot(snap) {
   if (!snap?.room) return snap;
   return {
@@ -85,7 +89,8 @@ function normalizeSnapshot(snap) {
     spins: (snap.spins ?? []).map((s) => ({
       ...s,
       assignments: (s.assignments ?? []).map((a) => ({ ...a, task: normalizeTask(a.task) }))
-    }))
+    })),
+    requests: Array.isArray(snap.requests) ? snap.requests : []
   };
 }
 
@@ -260,6 +265,11 @@ async function runRefresh() {
         // A reconnect re-fetch never animates: the change may have happened while we were away.
         applySnapshot(snap, job.animate && !job.sync ? "event" : "subscribe");
         render();
+        if (afterRefresh) {
+          const run = afterRefresh;
+          afterRefresh = null;
+          run();
+        }
       } catch (error) {
         if (mySession !== session) return;
         failures += 1;
@@ -288,6 +298,32 @@ function applySnapshot(raw, reason) {
     state.stageSpin = latest;
   }
   render();
+  // Other people's takeover actions arrive silently through realtime; say what changed for me.
+  // Not after a reconnect ("subscribe"): the changes may be old news, and the table shows them anyway.
+  // Not while my own takeover action is in flight either: its realtime event can land before the
+  // RPC answers, and that action announces its own result.
+  if (reason === "event" && prev && !state.revealing && state.busy !== "takeover") {
+    announceTakeovers(takeoverChanges(prev, snap, state.me));
+  }
+}
+
+function announceTakeovers(changes) {
+  if (changes.length) ui.announce(takeoverLines(changes).join(" "));
+}
+
+/** One sentence per change, for the screen reader. */
+function takeoverLines(changes) {
+  const snap = state.snapshot;
+  const name = (id) => snap.participants.find((p) => p.user_id === id)?.name ?? "Someone";
+  const mine = snap.spins.find((s) => s.spin_number === snap.room.spins_used)
+    ?.assignments.filter((a) => a.participant_id === state.me).length ?? 0;
+  return changes.map((c) => {
+    const task = ui.describeTask(c.task);
+    if (c.kind === "asked") return `${name(c.by)} asks to take over ${task}${c.mine ? " from you" : ""}.`;
+    if (c.kind === "approved") return `${task} is now yours. You have ${mine} task${mine === 1 ? "" : "s"}.`;
+    if (c.kind === "declined") return `Your request for ${task} was declined.`;
+    return `${task} went to ${c.to ? name(c.to) : "nobody"}. You have ${mine} task${mine === 1 ? "" : "s"}.`;
+  });
 }
 
 async function startReveal(target) {
@@ -374,6 +410,84 @@ async function onComplain() {
     state.alert = `Complaint failed: ${error.message}`;
     render();
   }
+}
+
+// ------------------------------------------------------------------ takeovers
+// After a spin, anyone may ask to take over a task; the moderator or whoever has it answers.
+// Every action sends one RPC and applies the snapshot it returns, like complaining does.
+
+const memberCanAct = () => state.connection === "connected" && state.synced && !state.busy && !state.revealing;
+
+async function takeoverAction(call, { taskId, done, failed, focus }) {
+  const before = state.snapshot;
+  if (!before || !memberCanAct()) return;
+  state.busy = "takeover";
+  state.alert = null;
+  render();  // the controls are rebuilt disabled, so focus is restored below either way
+  const mySession = session;
+  try {
+    const next = await call(before);
+    if (mySession !== session) return;
+    state.busy = null;
+    applySnapshot(next, "action");
+    render();
+    // Other people's changes that arrived meanwhile were kept quiet (busy); say them now, after mine.
+    const others = takeoverChanges(before, state.snapshot, state.me).filter((c) => c.task.id !== taskId);
+    ui.announce([done, ...takeoverLines(others)].join(" "));
+    focus();
+  } catch (error) {
+    if (mySession !== session) return;
+    state.busy = null;
+    state.alert = `${failed}: ${error.message}`;
+    render();
+    if (error.code === "network") {
+      focus();
+    } else {
+      // The room moved on (answered, withdrawn, spun): re-fetch, as an "event" so a spin that landed
+      // meanwhile still plays its reveal, and put focus back once the fresh state is on screen.
+      afterRefresh = focus;
+      refresh("event");
+    }
+  }
+}
+
+function onRequestTakeover(taskId) {
+  takeoverAction((snap) => backend.requestTakeover(snap.room.id, taskId), {
+    taskId,
+    done: "Request sent. The moderator or the person who has the task can approve it.",
+    failed: "Couldn't send the request",
+    focus: () => ui.focusTakeover(taskId)
+  });
+}
+
+function onWithdrawTakeover(requestId, taskId) {
+  takeoverAction(() => backend.withdrawTakeover(requestId), {
+    taskId,
+    done: "Request withdrawn.",
+    failed: "Couldn't withdraw the request",
+    focus: () => ui.focusTakeover(taskId)
+  });
+}
+
+function onResolveTakeover(requestId, approve, taskId) {
+  takeoverAction(() => backend.resolveTakeover(requestId, approve), {
+    taskId,
+    done: approve ? "Request approved. The task has a new owner." : "Request declined.",
+    failed: approve ? "Couldn't approve the request" : "Couldn't decline the request",
+    // Not onto another request's button: a repeated Enter would answer someone else's request.
+    focus: () => ui.focusAfterResolve()
+  });
+}
+
+/** Take over / Withdraw / Dismiss in the table, Approve / Decline / Withdraw in the requests list (event delegation). */
+function onTakeoverClick(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled) return;
+  const { action, taskId, requestId } = button.dataset;
+  if (action === "request") onRequestTakeover(taskId);
+  else if (action === "withdraw") onWithdrawTakeover(requestId, taskId);
+  else if (action === "approve") onResolveTakeover(requestId, true, taskId);
+  else if (action === "decline") { if (ui.confirmPress(button)) onResolveTakeover(requestId, false, taskId); }
 }
 
 // ------------------------------------------------------------------ tasks
@@ -599,10 +713,12 @@ async function onCopyLink() {
 
 // ------------------------------------------------------------------ wiring
 
+ui.renderSessionLinks(CONFIG.sessionLinks);
 ui.els.form.addEventListener("submit", onFormSubmit);
 ui.els.spinBtn.addEventListener("click", onSpin);
 ui.els.respinBtn.addEventListener("click", onSpin);
 ui.els.complainBtn.addEventListener("click", onComplain);
+ui.els.resultArea.addEventListener("click", onTakeoverClick);
 ui.els.copyLink.addEventListener("click", onCopyLink);
 ui.els.mineOnly.addEventListener("change", () => { state.mineOnly = ui.els.mineOnly.checked; render(); });
 ui.els.showFirst.addEventListener("change", () => { state.showFirst = ui.els.showFirst.checked; render(); });

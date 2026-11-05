@@ -149,7 +149,7 @@ a { color: var(--accent-text); }
 
 :focus { outline: none; }
 :focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; box-shadow: 0 0 0 1px var(--accent); }
-h1:focus-visible, h2:focus-visible { outline: none; box-shadow: none; }
+h1:focus-visible, h2:focus-visible, h3:focus-visible { outline: none; box-shadow: none; }
 
 .sr-only {
   position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -359,6 +359,12 @@ input:disabled + .switch { opacity: 0.5; }
 
 /* ------------------------------------------------------------------ room */
 
+/* session links: the URLs the team uses in every test session, above everything else in the room */
+.session-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; margin-bottom: 24px; }
+.session-links-label { font-size: 13px; color: var(--label-2); }
+.session-links-list { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.session-link .icon { width: 14px; height: 14px; }
+
 .room-grid { display: grid; gap: 32px; grid-template-columns: minmax(0, 1fr) 300px; align-items: start; }
 .room-main { display: grid; gap: 24px; min-width: 0; }
 
@@ -443,6 +449,33 @@ input:disabled + .switch { opacity: 0.5; }
 .tag { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; letter-spacing: 0; line-height: 18px; }
 .tag-you { background: var(--accent); color: var(--on-accent); }
 .tag-mod { background: var(--fill); color: var(--label); }
+.tag-requested { background: var(--orange-tint); color: var(--orange); }
+.tag-declined { background: var(--fill); color: var(--label); }
+
+/* takeovers: the "Assigned to" cell carries who had the task before, and the controls to ask for it */
+.result-hint { margin-top: 4px; max-width: 60ch; }
+.assignee-box { display: grid; gap: 3px; justify-items: start; }
+.handover { font-size: 13px; color: var(--label-2); }
+.takeover-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.takeover-note { width: 100%; }
+.btn-inline { min-height: 30px; padding: 0 12px; margin-left: -12px; font-size: 14px; }
+.tag + .btn-inline { margin-left: 0; }
+
+/* pending requests, above the table */
+.takeovers-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; padding: 14px 16px 10px; }
+.takeovers-title { font-size: 17px; font-weight: 600; }
+.takeovers-list { list-style: none; margin: 0; padding: 0; }
+.takeover {
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+  padding: 12px 16px;
+}
+.takeover::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; height: 1px; background: var(--separator); }
+.takeover.is-mine { background: var(--accent-tint); }
+.takeover.is-declined .takeover-line { color: var(--label-2); }
+.takeover-text { display: grid; gap: 2px; flex: 1 1 320px; min-width: 0; font-size: 15px; line-height: 1.4; }
+.takeover-text b { font-weight: 600; overflow-wrap: anywhere; }
+.takeover-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.takeover-actions .btn-confirmable[data-armed="true"] { min-width: 0; }
 
 .empty { padding: 28px 16px; text-align: center; color: var(--label-2); font-size: 15px; }
 
@@ -519,6 +552,10 @@ input:disabled + .switch { opacity: 0.5; }
 .task-title { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; }
 .task-name { font-size: 16px; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
 .tag-theme { background: var(--fill); color: var(--label-2); font-weight: 600; }
+/* E3DC green, Flow blue (text ≥4.5:1 on its tint in both appearances); a faint edge keeps the pill visible on tinted rows */
+.tag-theme[data-theme="e3dc"] { background: var(--green-tint); color: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--green) 22%, transparent); }
+.tag-theme[data-theme="flow"] { background: var(--accent-tint); color: var(--accent-text); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-text) 22%, transparent); }
+.result-table td .tag-theme { justify-self: start; }
 .task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; font-size: 13px; line-height: 1.38; color: var(--label-2); }
 .meta-item { display: inline-flex; align-items: center; gap: 4px; }
 .meta-item .icon { width: 14px; height: 14px; flex: none; }
@@ -667,6 +704,8 @@ input:disabled + .switch { opacity: 0.5; }
   #copy-link { grid-column: 2; grid-row: 2; justify-self: end; margin-right: -10px; }
   .btn-large { width: 100%; }
   .complaint-actions, .complaint-actions .btn { width: 100%; }
+  .takeover-actions { width: 100%; }
+  .takeover-actions .btn { flex: 1; }
   /* the task editor becomes a bottom sheet */
   .sheet { width: 100%; margin: auto 0 0; border-radius: 20px 20px 0 0; max-height: calc(100dvh - 24px); }
   .sheet-body { padding: 22px 16px 16px; }

@@ -5,7 +5,8 @@ import { DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js"
 import {
   spinRule, tasksEditable, isDefaultTaskList, taskBrowsers,
   hasCriticalFlows, isCriticalFlow, CRITICAL_FLOW_COUNT,
-  peopleWithoutTask, taskNeedsMac, taskPhones
+  peopleWithoutTask, taskNeedsMac, taskPhones,
+  takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests, canReceiveTask
 } from "./domain.js";
 import { drawWheel } from "./reveal.js";
 
@@ -19,9 +20,11 @@ export const els = {
   name: $("name"), nameError: $("name-error"), teamError: $("team-error"),
   formError: $("form-error"), formSubmit: $("form-submit"),
   viewRoom: $("view-room"), roomHeading: $("room-heading"), roomAlert: $("room-alert"),
+  sessionLinks: $("session-links"), sessionLinksList: $("session-links-list"),
   wheelArea: $("wheel-area"), wheelStage: $("wheel-stage"), wheelRotor: $("wheel-rotor"),
   spinBtn: $("spin-btn"), wheelStatus: $("wheel-status"), wheelWarning: $("wheel-warning"),
-  resultArea: $("result-area"), resultTitle: $("result-title"), myCount: $("my-count"),
+  resultArea: $("result-area"), resultTitle: $("result-title"), myCount: $("my-count"), resultHint: $("result-hint"),
+  takeovers: $("takeovers"), takeoversTitle: $("takeovers-title"), takeoversHint: $("takeovers-hint"), takeoversList: $("takeovers-list"),
   mineOnly: $("mine-only"), showFirstWrap: $("show-first-wrap"), showFirst: $("show-first"),
   viewingFirst: $("viewing-first"), resultTable: $("result-table"), resultBody: $("result-body"), resultEmpty: $("result-empty"),
   complaints: $("complaints"), complaintCount: $("complaint-count"), complaintHint: $("complaint-hint"),
@@ -58,7 +61,8 @@ const ICONS = {
   globe: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18ZM3.5 12h17M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9s1.2-6.5 3.6-9Z",
   person: "M12 11.5a3.75 3.75 0 1 0 0-7.5 3.75 3.75 0 0 0 0 7.5ZM4.75 20.25c.9-3.4 3.75-5.25 7.25-5.25s6.35 1.85 7.25 5.25",
   pencil: "M14.5 5.5l4 4M4.5 19.5l1-4.5L16 4.5a1.4 1.4 0 0 1 2 0l1.5 1.5a1.4 1.4 0 0 1 0 2L9 18.5l-4.5 1Z",
-  trash: "M4.5 6.5h15M9.5 6.5v-2h5v2M6.5 6.5l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-12.1M10 10.5v5.5M14 10.5v5.5"
+  trash: "M4.5 6.5h15M9.5 6.5v-2h5v2M6.5 6.5l.9 12.1a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-12.1M10 10.5v5.5M14 10.5v5.5",
+  external: "M7.5 16.5l9-9M9 7.5h7.5V15"
 };
 
 const labelIn = (options, value) => options.find((o) => o.value === value)?.label ?? value;
@@ -225,6 +229,13 @@ function tasksSummary(tasks) {
   return `${plural(tasks.length, "task")} · ${isDefaultTaskList(tasks) ? "default set" : "edited"}`;
 }
 
+/** The theme as a coloured tag: E3DC green, Flow blue, anything else neutral. */
+function themeTag(theme) {
+  const tag = el("span", "tag tag-theme", labelIn(THEMES, theme));
+  tag.dataset.theme = theme;
+  return tag;
+}
+
 function metaItem(iconName, text) {
   const item = el("span", "meta-item");
   item.append(icon(iconName, "icon icon-stroke"), document.createTextNode(text));
@@ -249,7 +260,7 @@ function taskRow(t, { editable, busy, lastOne }) {
 
   const main = el("div", "task-main");
   const title = el("div", "task-title");
-  title.append(el("span", "task-name", t.what), el("span", "tag tag-theme", labelIn(THEMES, t.theme)));
+  title.append(el("span", "task-name", t.what), themeTag(t.theme));
 
   const meta = el("div", "task-meta");
   if (t.devices.includes("desktop")) meta.append(metaItem("desktop", "Desktop"));
@@ -567,14 +578,36 @@ export function closeTaskEditor() {
 
 // ------------------------------------------------------------------ room
 
+/** The links the team uses in every session (from config). Hidden when none are configured. */
+export function renderSessionLinks(links) {
+  const items = links.map(({ label, url }) => {
+    const li = el("li");
+    const a = el("a", "btn btn-tinted btn-small session-link");
+    a.href = url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.append(el("span", null, label), icon("external", "icon icon-stroke"), el("span", "sr-only", "(opens in a new tab)"));
+    li.append(a);
+    return li;
+  });
+  els.sessionLinksList.replaceChildren(...items);
+  els.sessionLinks.hidden = items.length === 0;
+}
+
 let wheelKey = null;
 let tableKey = null;
+let takeoversKey = null;
 let lastComplaintCount = null;
+let lastMyCount = null;        // { spin, count }: bumps "You have N tasks" when a takeover changes it
+let lastPendingCount = null;   // { spin, count }: bumps the requests heading when one arrives
 
 export function enterRoomView(code) {
   wheelKey = null;
   tableKey = null;
+  takeoversKey = null;
   lastComplaintCount = null;
+  lastMyCount = null;
+  lastPendingCount = null;
   els.roomCode.textContent = code;
   els.roomHeading.textContent = `Room ${code}`;
   els.mineOnly.checked = false;
@@ -586,6 +619,11 @@ export function enterRoomView(code) {
 
 function moderatorCanAct(state) {
   return state.connection === "connected" && state.synced && state.presenceReady && !state.busy && !state.revealing;
+}
+
+/** Whether anyone in the room may send a request right now (connected and in sync, nothing else running). */
+function memberCanAct(state) {
+  return state.connection === "connected" && state.synced && !state.busy && !state.revealing;
 }
 
 /** Whether this browser may change the room's tasks right now (presence isn't needed for that). */
@@ -800,6 +838,8 @@ export function renderResult(state) {
   const mine = spin.assignments.filter((a) => a.participant_id === state.me);
   els.resultTitle.textContent = showingFirst ? "First spin (replaced)" : finalShown ? "Final result" : "Result";
   els.myCount.textContent = `You have ${plural(mine.length, "task")}`;
+  if (lastMyCount?.spin === spin.spin_number && lastMyCount.count !== mine.length) bump(els.myCount);
+  lastMyCount = { spin: spin.spin_number, count: mine.length };
   els.showFirstWrap.hidden = !finalShown;
   els.viewingFirst.hidden = !showingFirst;
   els.showFirst.checked = showingFirst;
@@ -809,12 +849,227 @@ export function renderResult(state) {
   els.resultEmpty.hidden = visible.length > 0;
   els.resultTable.hidden = visible.length === 0;
 
-  const key = JSON.stringify([spin.spin_number, state.mineOnly, state.me, spin.created_at]);
+  // Takeovers apply to the current spin only; the first spin is history once the second exists.
+  const open = takeoversOpen(snap.room) && spin.spin_number === snap.room.spins_used;
+  const requests = open ? snap.requests ?? [] : [];
+  const ctx = {
+    me: state.me,
+    meRow: snap.participants.find((p) => p.user_id === state.me) ?? null,
+    room: snap.room,
+    participants: snap.participants,
+    requests,
+    open,
+    canAct: open && memberCanAct(state),
+    atLimit: pendingRequests(requests).filter((r) => r.user_id === state.me).length >= CONFIG.maxPendingRequests,
+    isOnline: (userId) => isOnline(state, userId)
+  };
+  els.resultHint.hidden = !open;
+  els.resultHint.textContent = !open ? ""
+    : ctx.atLimit ? `You have ${CONFIG.maxPendingRequests} requests waiting. Withdraw one to ask for another.`
+    : "Want a task? Press Take over on it. The moderator or whoever has the task approves.";
+
+  const key = JSON.stringify([spin.spin_number, state.mineOnly, state.me, spin.created_at, takeoverKey(spin, ctx)]);
   if (key !== tableKey) {
-    els.resultBody.replaceChildren(...visible.map((a) => resultRow(a, state.me)));
+    els.resultBody.replaceChildren(...visible.map((a) => resultRow(a, ctx)));
     tableKey = key;
   }
+  renderTakeovers(spin, ctx);
   return Array.from(els.resultBody.children);
+}
+
+/** Everything the takeover controls depend on, so presence updates don't rebuild the table. */
+function takeoverKey(spin, ctx) {
+  return [
+    spin.assignments.map((a) => [a.participant_id, a.took_over_from?.user_id ?? null, a.took_over_at ?? null]),
+    ctx.requests.map((r) => [r.id, r.task_id, r.user_id, r.status]),
+    ctx.participants.map((p) => [p.user_id, p.name, p.mac, p.android, p.ios]),
+    ctx.room.host_user_id, ctx.open, ctx.canAct, ctx.atLimit
+  ];
+}
+
+const nameOf = (participants, userId) => participants.find((p) => p.user_id === userId)?.name ?? "Someone";
+
+/** "Ada", "Ada and Bob", "Ada, Bob and Cy" */
+function listNames(names) {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+function actionButton(label, className, data, enabled) {
+  const button = el("button", className, label);
+  button.type = "button";
+  Object.assign(button.dataset, data);
+  button.disabled = !enabled;
+  return button;
+}
+
+/** The takeover line under the assignee: who else asked, and my own Take over / Withdraw / Declined. */
+function takeoverControls(a, ctx) {
+  if (!ctx.open) return null;
+  const wrap = el("span", "takeover-row");
+  const others = pendingRequests(ctx.requests).filter((r) => r.task_id === a.task_id && r.user_id !== ctx.me);
+  if (others.length) {
+    const names = listNames(others.map((r) => nameOf(ctx.participants, r.user_id)));
+    wrap.append(el("span", "footnote takeover-note", `${names} asked to take this over.`));
+  }
+  const mine = requestFor(ctx.requests, a.task_id, ctx.me);
+  const task = describeTask(a.task);
+  if (mine?.status === "pending") {
+    const withdraw = actionButton("Withdraw", "btn btn-plain btn-small btn-inline", { action: "withdraw", requestId: mine.id, taskId: a.task_id }, ctx.canAct);
+    withdraw.setAttribute("aria-label", `Withdraw your request for ${task}`);
+    wrap.append(el("span", "tag tag-requested", "Requested"), withdraw);
+  } else if (mine?.status === "declined" || (mine?.status === "withdrawn" && mine.resolved_by)) {
+    // Declined stays declined for this owner. Dismiss takes it out of the owner's list for good.
+    const tag = el("span", "tag tag-declined", "Declined");
+    tag.append(el("span", "sr-only", ": your request for this task was declined"));
+    wrap.append(tag);
+    if (mine.status === "declined") {
+      const dismiss = actionButton("Dismiss", "btn btn-plain btn-small btn-inline", { action: "withdraw", requestId: mine.id, taskId: a.task_id }, ctx.canAct);
+      dismiss.setAttribute("aria-label", `Dismiss your declined request for ${task}`);
+      wrap.append(dismiss);
+    }
+  } else if (canRequestTakeover(a, ctx.meRow)) {
+    const button = actionButton("Take over", "btn btn-plain btn-small btn-inline", { action: "request", taskId: a.task_id }, ctx.canAct && !ctx.atLimit);
+    button.setAttribute("aria-label", `Ask to take over ${task}`);
+    wrap.append(button);
+  }
+  return wrap.childNodes.length ? wrap : null;
+}
+
+/**
+ * "Cy Dee is offline." for the people a request waits on. Presence changes often, so these
+ * notes are filled in place (patchOfflineNotes) instead of rebuilding the list, which would
+ * drop focus and disarm a half-pressed Decline.
+ */
+function offlineNote(userIds) {
+  const note = el("p", "footnote takeover-offline");
+  note.dataset.users = [...new Set(userIds.filter(Boolean))].join(",");
+  note.hidden = true;
+  return note;
+}
+
+function patchOfflineNotes(ctx) {
+  for (const note of els.takeoversList.querySelectorAll(".takeover-offline")) {
+    const names = note.dataset.users.split(",").filter((id) => id && !ctx.isOnline(id)).map((id) => nameOf(ctx.participants, id));
+    note.hidden = names.length === 0;
+    note.textContent = names.length ? `${listNames(names)} ${names.length === 1 ? "is" : "are"} offline.` : "";
+  }
+}
+
+/** "Waiting for Bob or the moderator." for my own pending request. */
+function waitingFor(a, ctx) {
+  return a.participant_id == null || a.participant_id === ctx.room.host_user_id
+    ? "Waiting for the moderator."
+    : `Waiting for ${a.participant.name} or the moderator.`;
+}
+
+/**
+ * The requests of the current spin that concern people: every pending one (Approve / Decline
+ * for whoever may answer, Withdraw for the requester), then the declined ones that I could
+ * still approve after all. Hidden when there is nothing to show.
+ */
+function renderTakeovers(spin, ctx) {
+  const isHost = ctx.me === ctx.room.host_user_id;
+  const pending = pendingRequests(ctx.requests);
+  // Declined requests I could still approve after all (the moderator: their own too)
+  const reconsider = ctx.requests.filter((r) => r.status === "declined" && (r.user_id !== ctx.me || isHost)
+    && canResolveTakeover(spin.assignments.find((x) => x.task_id === r.task_id), ctx.room, ctx.me));
+  els.takeovers.hidden = pending.length + reconsider.length === 0;
+  if (lastPendingCount?.spin === spin.spin_number && pending.length > lastPendingCount.count) bump(els.takeoversTitle);
+  lastPendingCount = { spin: spin.spin_number, count: pending.length };
+  if (pending.length + reconsider.length === 0) {
+    takeoversKey = null;
+    els.takeoversList.replaceChildren();
+    return;
+  }
+  const key = JSON.stringify([spin.spin_number, takeoverKey(spin, ctx), ctx.me]);
+  if (key === takeoversKey) {
+    patchOfflineNotes(ctx);  // presence changed, nothing else: keep the list (and focus) as it is
+    return;
+  }
+  takeoversKey = key;
+
+  els.takeoversTitle.textContent = pending.length ? plural(pending.length, "takeover request") : "Declined requests";
+  els.takeoversHint.textContent = pending.length === 0
+    ? "Declined for this spin. You can still approve one after all."
+    : isHost
+      ? "You can approve or decline any of them. Whoever has the task can answer too."
+      : "The moderator or whoever has the task approves or declines.";
+
+  const items = [];
+  [...pending, ...reconsider].forEach((r) => {
+    const a = spin.assignments.find((x) => x.task_id === r.task_id);
+    if (!a) return;
+    const li = el("li", "takeover");
+    const iAsked = r.user_id === ctx.me;
+    const iHaveIt = a.participant_id != null && a.participant_id === ctx.me;
+    const requester = nameOf(ctx.participants, r.user_id);
+    if (iAsked || iHaveIt) li.classList.add("is-mine");
+
+    const text = el("div", "takeover-text");
+    const line = el("p", "takeover-line");
+    const declined = r.status === "declined";
+    line.append(el("b", null, iAsked ? "You" : requester), document.createTextNode(` ${declined ? "asked" : iAsked ? "want" : "wants"} to take over `), el("b", null, describeTask(a.task)));
+    if (a.participant_id == null) line.append(document.createTextNode(", which is unassigned."));
+    else line.append(document.createTextNode(" from "), el("b", null, iHaveIt ? "you" : a.participant.name), document.createTextNode("."));
+    text.append(line);
+
+    const actions = el("div", "takeover-actions");
+    const requesterRow = ctx.participants.find((p) => p.user_id === r.user_id) ?? null;
+    const stillAble = requesterRow !== null && canReceiveTask(a.task, requesterRow);
+    const task = describeTask(a.task);
+    const whose = iAsked ? "your" : `${requester}'s`;
+    const canAnswer = canResolveTakeover(a, ctx.room, ctx.me);
+    if (declined) {
+      li.classList.add("is-declined");
+      text.append(el("p", "footnote", `${r.resolved_by === ctx.me ? "You" : nameOf(ctx.participants, r.resolved_by)} declined.${stillAble ? "" : ` ${requester} no longer has the Mac or phone this task needs.`}`));
+      const approve = actionButton("Approve after all", "btn btn-tinted btn-small", { action: "approve", requestId: r.id, taskId: r.task_id }, ctx.canAct && stillAble);
+      approve.setAttribute("aria-label", `Approve ${whose} request to take over ${task} after all`);
+      actions.append(approve);
+    } else if (iAsked) {
+      // Mine: Withdraw, and, for the moderator, Approve (they may answer their own request)
+      text.append(el("p", "footnote", canAnswer ? "You can approve this yourself." : waitingFor(a, ctx)));
+      const withdraw = actionButton("Withdraw", "btn btn-plain btn-small", { action: "withdraw", requestId: r.id, taskId: r.task_id }, ctx.canAct);
+      withdraw.setAttribute("aria-label", `Withdraw your request for ${task}`);
+      if (canAnswer) {
+        const approve = actionButton("Approve", "btn btn-primary btn-small", { action: "approve", requestId: r.id, taskId: r.task_id }, ctx.canAct && stillAble);
+        approve.setAttribute("aria-label", `Approve your own request to take over ${task}`);
+        actions.append(approve);
+      }
+      actions.append(withdraw);
+    } else if (canAnswer) {
+      // Who else this waits on: the moderator sees whether the owner is around, the owner whether the moderator is
+      text.append(offlineNote([r.user_id, iHaveIt ? ctx.room.host_user_id : a.participant_id]));
+      if (!stillAble) text.append(el("p", "footnote", `${requester} no longer has the Mac or phone this task needs.`));
+      const approve = actionButton("Approve", "btn btn-primary btn-small", { action: "approve", requestId: r.id, taskId: r.task_id }, ctx.canAct && stillAble);
+      approve.setAttribute("aria-label", `Approve ${whose} request to take over ${task}`);
+      const decline = actionButton(null, "btn btn-tinted btn-small btn-confirmable", { action: "decline", requestId: r.id, taskId: r.task_id }, ctx.canAct);
+      decline.append(el("span", "when-idle", "Decline"), el("span", "when-armed", "Confirm decline"));
+      decline.setAttribute("aria-label", `Decline ${whose} request to take over ${task}`);
+      actions.append(approve, decline);
+    }
+    li.append(text, actions);
+    items.push(li);
+  });
+  els.takeoversList.replaceChildren(...items);
+  patchOfflineNotes(ctx);
+}
+
+/** After a request changed, put focus on that task's control (table row first, then the requests list, then the title). */
+export function focusTakeover(taskId) {
+  const row = els.resultBody.querySelector(`tr[data-task-id="${CSS.escape(taskId)}"] button:not(:disabled)`);
+  const node = row ?? els.takeoversList.querySelector("button:not(:disabled)");
+  if (node) node.focus();
+  else focusResultTitle();
+}
+
+/**
+ * After a request was answered: the list's heading while there are more requests, else the result
+ * title. Never another request's button, so a repeated key press can't answer someone else's request.
+ */
+export function focusAfterResolve() {
+  if (!els.takeovers.hidden) els.takeoversTitle.focus({ preventScroll: true });
+  else focusResultTitle();
 }
 
 function cell(label, content, className) {
@@ -826,11 +1081,13 @@ function cell(label, content, className) {
   return td;
 }
 
-function resultRow(a, me) {
+function resultRow(a, ctx) {
   const t = a.task;
+  const me = ctx.me;
   const isMine = a.participant_id !== null && a.participant_id === me;
   const tr = el("tr", isMine ? "is-mine" : a.participant_id === null ? "is-unassigned" : "");
   tr.setAttribute("role", "row");
+  tr.dataset.taskId = t.id;
 
   const what = el("span", "task-what-box");
   what.append(el("span", "task-what", t.what));
@@ -842,6 +1099,15 @@ function resultRow(a, me) {
     if (isMine) assignee.append(el("span", "tag tag-you", "You"));
     assignee.append(el("span", "assignee-name", a.participant.name));
   }
+  const assigneeBox = el("div", "assignee-box");
+  assigneeBox.append(assignee);
+  if (a.took_over_at) {
+    const byModerator = a.took_over_by && a.took_over_by === ctx.room.host_user_id && a.took_over_by !== a.took_over_from?.user_id;
+    const from = a.took_over_from ? `Took over from ${a.took_over_from.name}` : "Took over an unassigned task";
+    assigneeBox.append(el("span", "handover", byModerator ? `${from} (approved by the moderator)` : from));
+  }
+  const controls = takeoverControls(a, ctx);
+  if (controls) assigneeBox.append(controls);
 
   const match = el("span", "match");
   if (a.participant_id === null) { match.classList.add("match-none"); match.append(el("span", null, "—"), el("span", "sr-only", "Not applicable")); }
@@ -851,11 +1117,11 @@ function resultRow(a, me) {
 
   tr.append(
     cell("Task", what, "c-what"),
-    cell("Theme", labelIn(THEMES, t.theme)),
+    cell("Theme", themeTag(t.theme)),
     cell("Devices", labelsIn(DEVICES, t.devices).join(", ")),
     cell("Browsers", taskBrowsers(t).length ? browsersText(t) : "—"),
     cell("Task team", t.team ?? "Any"),
-    cell("Assigned to", assignee, "c-assignee"),
+    cell("Assigned to", assigneeBox, "c-assignee"),
     cell("Their team", a.participant ? a.participant.team : "—"),
     cell("Team match", match, "c-match")
   );
@@ -877,7 +1143,7 @@ function renderComplaints(state) {
 
   if (room.status === "final") {
     els.complaintCount.textContent = "Final result";
-    els.complaintHint.textContent = "Both spins are used. No more spins or complaints.";
+    els.complaintHint.textContent = "Both spins are used. No more spins or complaints, but tasks can still change hands through takeover requests.";
     els.complainBtn.hidden = true;
     els.respinBtn.hidden = true;
     return;

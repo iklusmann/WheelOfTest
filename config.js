@@ -5,12 +5,47 @@ import ENV from "./env.js";
 
 const list = (value) => (value || "").split(",").map((item) => item.trim()).filter(Boolean);
 
+/**
+ * One session link from .env: "Label | https://url" (the label is optional; without it the
+ * host name is shown). Only http(s) URLs are accepted; anything else is skipped with a warning.
+ */
+function sessionLink(name, raw) {
+  // Quotes belong in .env, not in a GitHub repository variable; forgive them either way.
+  const text = (typeof raw === "string" ? raw.trim() : "").replace(/^(["'])(.*)\1$/s, "$2").trim();
+  if (!text) return null;
+  const asUrl = (s) => {
+    try {
+      const url = new URL(s);
+      return /^https?:$/.test(url.protocol) && !/\s/.test(s) ? url : null;
+    } catch { return null; }
+  };
+  // The whole value, or "Label | URL" split at the last pipe that leaves a URL (labels may contain pipes too)
+  let label = "";
+  let parsed = asUrl(text);
+  for (const at of [text.lastIndexOf("|"), text.indexOf("|")]) {
+    if (parsed || at < 0) break;
+    parsed = asUrl(text.slice(at + 1).trim());
+    if (parsed) label = text.slice(0, at).trim();
+  }
+  if (!parsed) {
+    console.warn(`[WheelOfTest] ${name} is not an http(s) URL and is ignored: ${JSON.stringify(raw)}`);
+    return null;
+  }
+  return { label: label || parsed.hostname, url: parsed.href };
+}
+
 export const CONFIG = {
   supabaseUrl: ENV.SUPABASE_URL || "",
   supabasePublishableKey: ENV.SUPABASE_PUBLISHABLE_KEY || "",
 
   teams: list(ENV.TEAM_OPTIONS).length ? list(ENV.TEAM_OPTIONS) : ["AF", "CYD", "PB"],
   nameMaxLength: 40,
+
+  // Links the team uses in every test session (e.g. the test environment and the test cases).
+  // Shown at the top of the room. Set SESSION_LINK_1 and SESSION_LINK_2 in .env.
+  sessionLinks: [["SESSION_LINK_1", ENV.SESSION_LINK_1], ["SESSION_LINK_2", ENV.SESSION_LINK_2]]
+    .map(([name, raw]) => sessionLink(name, raw))
+    .filter(Boolean),
 
   // The database enforces these two. Keep them equal to
   // public.wot_room_capacity() and public.wot_complaint_threshold() in supabase/schema.sql.
@@ -19,7 +54,11 @@ export const CONFIG = {
 
   // Per-room task list limits. The database enforces them in public._wot_clean_tasks().
   maxTasks: 50,
-  taskNameMaxLength: 60
+  taskNameMaxLength: 60,
+
+  // How many takeover requests one person may have waiting at once. Keep equal to
+  // public.wot_max_pending_requests() in supabase/schema.sql.
+  maxPendingRequests: 5
 };
 
 export function isConfigured() {

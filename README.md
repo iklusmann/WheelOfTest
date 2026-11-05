@@ -1,12 +1,12 @@
 # WheelOfTest
 
-A small QA task roulette for one team. People join a room through a link, the moderator spins the wheel once, and every test task gets an owner. Each room starts with the 32 default tasks, and the moderator can edit, add or delete tasks for that room until the first spin. Testers say which devices they have (Desktop always, plus Mac, Android, iOS), and each task only goes to someone who has its device. If at least two people complain, the moderator can run one final spin.
+A small QA task roulette for one team. People join a room through a link, the moderator spins the wheel once, and every test task gets an owner. Each room starts with the 32 default tasks, and the moderator can edit, add or delete tasks for that room until the first spin. Testers say which devices they have (Desktop always, plus Mac, Android, iOS), and each task only goes to someone who has its device. If at least two people complain, the moderator can run one final spin. After a spin, anyone can ask to take over a task; the moderator or whoever has the task approves. Two links the team uses in every session sit at the top of the room.
 
 Static site (HTML, CSS, vanilla ES modules, no build step) on GitHub Pages, with Supabase for the room database, anonymous auth and realtime.
 
 ```text
 index.html  styles.css  app.js  config.js  tasks.js  domain.js  backend.js  ui.js  reveal.js
-tests.html  supabase/schema.sql  .github/workflows/deploy.yml
+tests.html  supabase/schema.sql  scripts/build-env.mjs  .github/workflows/deploy.yml
 ```
 
 ## Setup
@@ -20,9 +20,9 @@ tests.html  supabase/schema.sql  .github/workflows/deploy.yml
 
 ### 2. Run the schema
 
-Open **SQL Editor**, paste all of `supabase/schema.sql`, and run it. It creates the four tables with constraints, enables RLS, revokes the default client grants, creates the RPCs, and adds `rooms` to the `supabase_realtime` publication. It is safe to run again.
+Open **SQL Editor**, paste all of `supabase/schema.sql`, and run it. It creates the five tables with constraints, enables RLS, revokes the default client grants, creates the RPCs, and adds `rooms` to the `supabase_realtime` publication. It is safe to run again.
 
-**Upgrading from an earlier version:** run `schema.sql` again, then deploy the new frontend straight away. It adds a `mac` column to `participants` (existing people get `false`) and replaces the task and spin functions. Existing rooms keep working: rooms from before tasks were editable store tasks in the old shape (`platform`/`device`), and both the database and the app still read it. Anyone who has an old page open should reload.
+**Upgrading from an earlier version:** run `schema.sql` again, then deploy the new frontend straight away. It adds the `takeover_requests` table and its three functions (`request_takeover`, `resolve_takeover`, `withdraw_takeover`), the `requests` list in the room snapshot, and, from older versions still, the `mac` column on `participants` (existing people get `false`). Existing rooms keep working: rooms from before tasks were editable store tasks in the old shape (`platform`/`device`), and both the database and the app still read it. A frontend deployed before the schema is updated shows "The database functions are missing" when someone presses **Take over**; the rest keeps working. Anyone who has an old page open should reload.
 
 ### 3. Configure the frontend
 
@@ -32,13 +32,17 @@ Click **Connect** in the dashboard (or go to **Settings → API Keys**) and put 
 SUPABASE_URL=https://YOUR-PROJECT-REF.supabase.co
 SUPABASE_PUBLISHABLE_KEY=sb_publishable_...   # the legacy anon key also works
 TEAM_OPTIONS=AF,CYD,PB                        # optional
+SESSION_LINK_1="Test environment | https://staging.example.com"   # optional, see below
+SESSION_LINK_2="Test cases | https://docs.example.com/test-cases"  # optional
 ```
 
 Then run `node scripts/build-env.mjs` (Node 20.12+) to generate `env.js`, which `config.js` reads. Re-run it after every `.env` change. `.env` and `env.js` are git-ignored; for GitHub Pages, set the same names as repository **variables** (the deploy workflow generates `env.js`).
 
+**Session links.** `SESSION_LINK_1` and `SESSION_LINK_2` are the two URLs the team uses in every test session (for example the test environment and the test cases). They show up as buttons in a bar at the top of every room, above the wheel, and open in a new tab. The format is `Label | URL`; without a label the host name is shown. Only `http(s)` URLs are accepted (anything else is ignored with a warning in the browser console). Leave both unset and the bar is not shown. Put the value in quotes in `.env` (as above): an unquoted value is cut at the first `#`, so a URL with a fragment would lose it. In a GitHub repository variable, enter the bare `Label | URL` (quotes are tolerated there too).
+
 Both values are public by design. Never put the secret/service-role key or the database password in `.env`.
 
-`config.js` also holds `roomCapacity` (30) and `complaintThreshold` (2). The database enforces both through `public.wot_room_capacity()` and `public.wot_complaint_threshold()` in `schema.sql`. The same goes for `maxTasks` (50) and `taskNameMaxLength` (60), which `public._wot_clean_tasks()` enforces. If you change one side, change the other.
+`config.js` also holds `roomCapacity` (30) and `complaintThreshold` (2). The database enforces both through `public.wot_room_capacity()` and `public.wot_complaint_threshold()` in `schema.sql`. The same goes for `maxTasks` (50) and `taskNameMaxLength` (60), which `public._wot_clean_tasks()` enforces, and for `maxPendingRequests` (5, `public.wot_max_pending_requests()`). If you change one side, change the other.
 
 ### 4. Run locally
 
@@ -99,6 +103,20 @@ When the moderator clicks **Spin**, their browser runs `assignTasks` from `domai
 
 **Accepted trade-off:** because the moderator's browser computes the result, a moderator could submit a hand-picked assignment through the API. The database still enforces who may spin (only the host), how often (at most twice, the second only after 2+ complaints), that every task appears exactly once, that assignees are room members, and the device rule. It also enforces who may change tasks (only the host), when (only before the first spin), and the shape of every task. It also stores names and team-match flags from its own tables, not from the client. This is an internal team tool: the room link is an open invitation, and a display name is not an identity.
 
+## Taking over a task
+
+Once the wheel has spun, every row of the result table that isn't yours (and that you have the Mac or phone for) has a **Take over** button. Pressing it sends a request. Requests show up for everyone in a **Takeover requests** box above the table, and the person who has the task sees the request on their own row too.
+
+- **Who answers:** the person who has the task, or the moderator. Either can **Approve** or **Decline** (Decline needs a second press). A request for an **Unassigned** task (nobody online had the device at spin time) is answered by the moderator alone, so someone who joins later with the right phone can pick it up.
+- **Approving** moves the task: the row shows the new owner and a note "Took over from …", "You have N tasks" and **My tasks only** follow, and the team-match column is recomputed. Nothing else changes: complaints stay as they are, and the task list stays locked.
+- **One request per task per spin, at most 5 waiting at once.** While a request is pending you can **Withdraw** it (from the row or the box) and ask again later. A **declined** request stays declined for that spin, so nobody gets asked twice; the row shows a "Declined" tag. Whoever may answer it still sees it in the box, greyed out, with **Approve after all** for a change of mind; if you no longer want the task, **Dismiss** takes it out of their box (it stays declined for you). The moderator can also ask for tasks and approve their own request (the box shows **Approve** next to their **Withdraw**). If two people answer the same request at the same moment: the same decision twice is fine, an approval followed by a decline gets "That request is no longer pending" and the refreshed room, and a decline followed by an approval goes through (that is the Approve-after-all path).
+- **When a task changes hands,** other people's pending requests for it stay and are now for the new owner to answer, and earlier refusals by the previous owner are lifted, so those people can ask the new owner.
+- **You hear about it.** Changes other people make reach everyone through the realtime update: the row and the box update, "You have N tasks" pulses when your count changes, and a screen reader is told what happened to you ("Ada asks to take over … from you", "… is now yours", "Your request for … was declined", "… went to Bob").
+- **Spins win.** The second spin reassigns everything, and every request that was still pending is dropped (marked `superseded` in the database). Requests keep working after the final spin, so the final table can still be adjusted by hand. **Show first spin** shows the first table as it was when it was replaced, including takeovers that happened to it; it has no buttons.
+- **The database checks everything**: that you're in the room, that the wheel has spun, that the task is in the current spin and not already yours, that you have the device it needs (also at approval time, since `join_room` can be called again with different devices), and who may answer. The three functions lock the room row like `commit_spin` does, so a request and a spin never interleave.
+
+The request itself is stored in `takeover_requests` (one row per person, task and spin); an approved takeover is written into the spin's `assignments` with `took_over_from` and `took_over_at`.
+
 ## Limitations
 
 - **Identity lives in the browser.** Clearing site data, switching browser or device, or using a private window creates a new anonymous user. That user has to re-join from the link. A **moderator who does this loses moderator rights** for that room and can't get them back, so start a new room.
@@ -139,6 +157,12 @@ A "Multiple GoTrueClient instances" console warning here is expected and harmles
 - [ ] **Tasks lock at the first spin.** After the spin, the task panel is gone, and `update_tasks` from M's console returns hint `tasks_locked`.
 - [ ] **Defaults stay default.** Open the start page again: it shows "32 tasks · default set", whatever you changed in earlier rooms.
 - [ ] **Reconnect re-fetches state.** In P's DevTools, set Network to *Offline*: the header shows "Reconnecting…". Meanwhile M complains or spins. Set P back to *Online*: the header returns to "Connected" and P shows the new state without replaying the reveal. While M is reconnecting, M's spin buttons are disabled.
+- [ ] **Session links.** With `SESSION_LINK_1` and `SESSION_LINK_2` set, every room shows the "Links for this session" bar above the wheel and the result, and each button opens its URL in a new tab. With neither set, the bar is absent.
+- [ ] **Take over.** After the spin, P presses **Take over** on one of M's Desktop tasks: P's row shows "Requested" with **Withdraw**, and both browsers show the request in the **Takeover requests** box within a second. M sees **Approve** and **Decline**; P sees neither. M approves: the task moves to P in both browsers, the row says "Took over from M", and P's "You have N tasks" goes up by one.
+- [ ] **Decline is final, withdraw is not.** P asks for another of M's tasks; M presses **Decline** twice. P's row shows "Declined" with **Dismiss**, and in P's console `await sb.rpc("request_takeover", { p_room_id: snap.room.id, p_task_id: "<that task id>" })` returns hint `request_declined`. M's box still lists it greyed out with **Approve after all**; P presses **Dismiss** and it leaves M's box. P asks for a third task and withdraws: **Take over** comes back.
+- [ ] **Only the holder or the moderator answers.** With a third profile, let P ask for one of the third person's tasks. In M's browser the request shows Approve and Decline; in P's own console `await sb.rpc("resolve_takeover", { p_request_id: "<id>", p_approve: true })`, with the id taken from `(await sb.rpc("get_room", { p_code: snap.room.code })).data.requests`, returns hint `not_allowed`. M asks for one of P's tasks: M's own item in the box has **Approve** and **Withdraw**.
+- [ ] **Device rule on takeovers.** P (no Mac) has no **Take over** on Mac tasks. In P's console, `request_takeover` with a Mac task id returns hint `device_mismatch`.
+- [ ] **A spin clears pending requests.** With a request pending, get two complaints and let M spin again: the **Takeover requests** box disappears, and `(await sb.rpc("get_room", { p_code: snap.room.code })).data.requests` is empty. **Show first spin** has no buttons.
 
 ## Troubleshooting
 

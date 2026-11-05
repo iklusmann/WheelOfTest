@@ -34,6 +34,8 @@ jobs:
           SUPABASE_URL: ${{ vars.SUPABASE_URL || secrets.SUPABASE_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY || secrets.SUPABASE_PUBLISHABLE_KEY }}
           TEAM_OPTIONS: ${{ vars.TEAM_OPTIONS }}
+          SESSION_LINK_1: ${{ vars.SESSION_LINK_1 }}
+          SESSION_LINK_2: ${{ vars.SESSION_LINK_2 }}
 
       - name: Upload site (repository root, no build step)
         uses: actions/upload-pages-artifact@v5

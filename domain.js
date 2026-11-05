@@ -392,3 +392,88 @@ export function spinRule(room, complaintCount, threshold = CONFIG.complaintThres
 export function tasksEditable(room) {
   return room?.status === "lobby" && room?.spins_used === 0;
 }
+
+// ---------------------------------------------------------------- takeovers
+// After a spin, a member may ask to take over a task of the latest spin. The moderator or
+// whoever has the task answers. These mirror the checks in request_takeover and
+// resolve_takeover; the database remains the authority.
+
+/** Requests are possible once the wheel has spun, and still after the final spin. */
+export function takeoversOpen(room) {
+  return room?.status === "spun" || room?.status === "final";
+}
+
+/**
+ * Whether `me` (a participant: { user_id, mac, android, ios }) may ask for this assignment's
+ * task: it isn't theirs already, and they have the Mac or phone it needs. Unassigned tasks
+ * can be asked for too.
+ */
+export function canRequestTakeover(assignment, me) {
+  if (!assignment || !me) return false;
+  if (assignment.participant_id != null && assignment.participant_id === me.user_id) return false;
+  return canReceiveTask(assignment.task, me);
+}
+
+/** Who may approve or decline a request for this assignment: the moderator, or whoever has the task now. */
+export function canResolveTakeover(assignment, room, userId) {
+  if (!assignment || !room || !userId) return false;
+  return userId === room.host_user_id || (assignment.participant_id != null && assignment.participant_id === userId);
+}
+
+/** The request `userId` made for `taskId` in this spin (whatever its status), or null. */
+export function requestFor(requests, taskId, userId) {
+  return (Array.isArray(requests) ? requests : []).find((r) => r.task_id === taskId && r.user_id === userId) ?? null;
+}
+
+/** The requests still waiting for an answer, in the order they were made. */
+export function pendingRequests(requests) {
+  return (Array.isArray(requests) ? requests : []).filter((r) => r.status === "pending");
+}
+
+/**
+ * What other people's takeover actions changed for `me` between two snapshots of the same
+ * spin, so the app can say it out loud: a request that now waits for me (for a task I hold,
+ * or any task if I am the moderator), my request being approved or declined, and a task of
+ * mine going to someone else. Nothing is reported across a spin (the reveal covers that).
+ * Returns [{ kind: "asked" | "approved" | "declined" | "lost", task, by?, to?, mine? }].
+ */
+export function takeoverChanges(prev, next, me) {
+  if (!prev?.room || !next?.room || !me) return [];
+  if (next.room.spins_used === 0 || prev.room.spins_used !== next.room.spins_used) return [];
+  const spinOf = (snap) => (snap.spins ?? []).find((s) => s.spin_number === snap.room.spins_used);
+  const before = spinOf(prev);
+  const after = spinOf(next);
+  if (!before || !after) return [];
+  const isHost = next.room.host_user_id === me;
+  const heldBefore = new Map(before.assignments.map((a) => [a.task_id, a.participant_id ?? null]));
+  const requestsBefore = Array.isArray(prev.requests) ? prev.requests : [];
+  const requestsAfter = Array.isArray(next.requests) ? next.requests : [];
+  const changes = [];
+
+  // Requests now waiting for me: new ones, and pending ones for a task that just became mine
+  const seen = new Set(pendingRequests(requestsBefore).map((r) => `${r.id}|${r.created_at}`));
+  for (const r of pendingRequests(requestsAfter)) {
+    if (r.user_id === me) continue;
+    const a = after.assignments.find((x) => x.task_id === r.task_id);
+    if (!a) continue;
+    const mine = a.participant_id === me;
+    const fresh = !seen.has(`${r.id}|${r.created_at}`);
+    const justMine = mine && heldBefore.get(r.task_id) !== me;
+    if ((fresh && (mine || isHost)) || justMine) changes.push({ kind: "asked", task: a.task, by: r.user_id, mine });
+  }
+  // My requests that were answered (a declined one can still be approved later)
+  for (const r of requestsAfter) {
+    if (r.user_id !== me || r.status === "pending") continue;
+    const was = requestsBefore.find((p) => p.id === r.id);
+    if (!was || was.status === r.status || !["pending", "declined"].includes(was.status)) continue;
+    const a = after.assignments.find((x) => x.task_id === r.task_id);
+    if (!a) continue;
+    if (r.status === "approved") changes.push({ kind: "approved", task: a.task });
+    else if (r.status === "declined") changes.push({ kind: "declined", task: a.task, by: r.resolved_by ?? null });
+  }
+  // Tasks I held that went to someone else
+  for (const a of after.assignments) {
+    if (heldBefore.get(a.task_id) === me && a.participant_id !== me) changes.push({ kind: "lost", task: a.task, to: a.participant_id ?? null });
+  }
+  return changes;
+}

@@ -78,6 +78,9 @@ export const commitSpin = (roomId, spinNumber, assignments) =>
   rpc("commit_spin", { p_room_id: roomId, p_spin_number: spinNumber, p_assignments: assignments });
 export const complain = (roomId) => rpc("complain", { p_room_id: roomId });
 export const updateTasks = (roomId, tasks) => rpc("update_tasks", { p_room_id: roomId, p_tasks: tasks });
+export const requestTakeover = (roomId, taskId) => rpc("request_takeover", { p_room_id: roomId, p_task_id: taskId });
+export const resolveTakeover = (requestId, approve) => rpc("resolve_takeover", { p_request_id: requestId, p_approve: approve });
+export const withdrawTakeover = (requestId) => rpc("withdraw_takeover", { p_request_id: requestId });
 
 // ------------------------------------------------------------------ realtime
 

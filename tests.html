@@ -30,7 +30,8 @@ import {
   normalizeTask, taskPhones, unassignedReason, validateTask, validateTaskList,
   newTaskId, sameTaskList, isDefaultTaskList, tasksEditable,
   taskNeedsMac, taskBrowsers, UNASSIGNED_NO_MAC,
-  withCriticalFlows, hasCriticalFlows, CRITICAL_FLOW_COUNT, peopleWithoutTask
+  withCriticalFlows, hasCriticalFlows, CRITICAL_FLOW_COUNT, peopleWithoutTask,
+  takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests, takeoverChanges
 } from "./domain.js";
 import { DEFAULT_TASKS as TASKS, defaultTasks, DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js";
 
@@ -798,6 +799,97 @@ test("spinRule: first spin, second spin gate at the threshold, then final", () =
   equal(spinRule({ status: "spun", spins_used: 1 }, 2, 2), { spinNumber: 2, allowed: true, reason: null }, "2 complaints");
   equal(spinRule({ status: "spun", spins_used: 1 }, 3, 2).allowed, true, "3 complaints");
   equal(spinRule({ status: "final", spins_used: 2 }, 5, 2).allowed, false, "final");
+});
+
+// ---------------------------------------------------------------- takeovers
+test("takeoversOpen: after the first spin, and still after the final one", () => {
+  equal(takeoversOpen({ status: "lobby", spins_used: 0 }), false, "lobby");
+  equal(takeoversOpen({ status: "spun", spins_used: 1 }), true, "spun");
+  equal(takeoversOpen({ status: "final", spins_used: 2 }), true, "final");
+  equal(takeoversOpen(null), false, "no room");
+});
+
+test("canRequestTakeover: not your own task, and only with the Mac or phone it needs", () => {
+  const mac = person("Mac", "AF", { mac: true }), droid = person("Droid", "PB", { android: true }), desk = person("Desk", "CYD");
+  const r = assignTasks(TASKS, [mac, droid, desk], seededRandom(3));
+  const by = new Map(r.assignments.map((a) => [a.task_id, a]));
+  const macTask = by.get("af-e3dc-mac"), iosTask = by.get("af-e3dc-ios"), deskTask = by.get("cuf-flow-desktop");
+  equal(macTask.participant_id, mac.user_id, "fixture: the Mac owner has the Mac task");
+  equal(iosTask.participant_id, null, "fixture: nobody has iOS");
+  equal(canRequestTakeover(macTask, mac), false, "own task");
+  equal(canRequestTakeover(macTask, desk), false, "no Mac");
+  equal(canRequestTakeover(macTask, droid), false, "a phone is not a Mac");
+  equal(canRequestTakeover(iosTask, droid), false, "Android is not iOS");
+  equal(canRequestTakeover(iosTask, person("I", "AF", { ios: true })), true, "an unassigned task can be asked for by someone with the device");
+  equal(canRequestTakeover(deskTask, deskTask.participant_id === desk.user_id ? mac : desk), true, "anyone can ask for a Desktop task that isn't theirs");
+  equal(canRequestTakeover(deskTask, null), false, "no participant");
+  equal(canRequestTakeover(null, desk), false, "no assignment");
+  equal(canRequestTakeover({ ...macTask, task: LEGACY[2] }, droid), true, "legacy mobile task: either phone");
+});
+
+test("canResolveTakeover: the moderator, or whoever has the task; an unassigned task only the moderator", () => {
+  const room = { host_user_id: "host", status: "spun", spins_used: 1 };
+  const held = { task_id: "t", task: task("t", ["desktop"]), participant_id: "bob" };
+  const free = { task_id: "u", task: task("u", ["ios"]), participant_id: null };
+  equal(canResolveTakeover(held, room, "host"), true, "moderator");
+  equal(canResolveTakeover(held, room, "bob"), true, "holder");
+  equal(canResolveTakeover(held, room, "ann"), false, "someone else");
+  equal(canResolveTakeover(free, room, "host"), true, "unassigned: moderator");
+  equal(canResolveTakeover(free, room, "bob"), false, "unassigned: not others");
+  equal(canResolveTakeover(held, room, null), false, "no user");
+  equal(canResolveTakeover(held, null, "host"), false, "no room");
+});
+
+test("takeoverChanges: what other people's actions changed for me, and only within one spin", () => {
+  const room = { host_user_id: "host", status: "spun", spins_used: 1, state_version: 5 };
+  const T = (id, who, extra = {}) => ({ task_id: id, task: task(id, ["desktop"]), participant_id: who, participant: who ? { name: who } : null, team_match: null, reason: null, ...extra });
+  const snap = (assignments, requests, over = {}) => ({ room: { ...room, ...over }, participants: [], spins: [{ spin_number: 1, assignments }], requests });
+  const req = (id, taskId, who, status, created = "t1") => ({ id, task_id: taskId, user_id: who, status, created_at: created, resolved_by: null });
+  const base = snap([T("a", "me"), T("b", "bob"), T("c", null)], []);
+
+  // a request lands on my task (and the moderator hears about every request)
+  const asked = snap([T("a", "me"), T("b", "bob"), T("c", null)], [req("r1", "a", "cy", "pending"), req("r2", "b", "cy", "pending"), req("r3", "c", "cy", "pending")]);
+  equal(takeoverChanges(base, asked, "me").map((c) => [c.kind, c.task.id, c.by, c.mine]), [["asked", "a", "cy", true]], "holder: only my task");
+  equal(takeoverChanges(base, asked, "host").map((c) => [c.kind, c.task.id, c.mine]), [["asked", "a", false], ["asked", "b", false], ["asked", "c", false]], "moderator: every request");
+  equal(takeoverChanges(base, asked, "cy"), [], "the requester hears nothing about their own requests");
+  equal(takeoverChanges(asked, asked, "me"), [], "nothing new: silent");
+  // the same row re-made after a withdrawal counts as new (same id, new created_at)
+  const remade = snap(asked.spins[0].assignments, [req("r1", "a", "cy", "pending", "t2")]);
+  equal(takeoverChanges(asked, remade, "me").map((c) => c.kind), ["asked"], "re-made request announced again");
+
+  // my request approved / declined, and a task of mine going away
+  const mineAsked = snap([T("a", "me"), T("b", "bob"), T("c", null)], [req("r5", "b", "me", "pending"), req("r6", "c", "me", "pending")]);
+  const answered = snap([T("a", "cy", { took_over_from: { user_id: "me", name: "me" }, took_over_at: "x" }), T("b", "me", { took_over_from: { user_id: "bob", name: "bob" }, took_over_at: "x" }), T("c", null)],
+    [{ ...req("r5", "b", "me", "approved"), resolved_by: "bob" }, { ...req("r6", "c", "me", "declined"), resolved_by: "host" }]);
+  equal(takeoverChanges(mineAsked, answered, "me").map((c) => [c.kind, c.task.id, c.by ?? c.to ?? null]),
+    [["approved", "b", null], ["declined", "c", "host"], ["lost", "a", "cy"]], "approved, declined, lost");
+  const relented = snap([T("a", "cy"), T("b", "me"), T("c", "me", { took_over_at: "y" })], [answered.requests[0], { ...req("r6", "c", "me", "approved"), resolved_by: "host" }]);
+  equal(takeoverChanges(answered, relented, "me").map((c) => [c.kind, c.task.id]), [["approved", "c"]], "a declined request approved after all");
+  equal(takeoverChanges(relented, relented, "me"), [], "settled: silent");
+  // a pending request from someone else for a task that just became mine now waits for me
+  const inherited = snap(answered.spins[0].assignments, [...answered.requests, req("r7", "b", "cy", "pending")]);
+  const inheritedBefore = snap(mineAsked.spins[0].assignments, [...mineAsked.requests, req("r7", "b", "cy", "pending")]);
+  equal(takeoverChanges(inheritedBefore, inherited, "me").filter((c) => c.kind === "asked").map((c) => [c.task.id, c.by]), [["b", "cy"]], "inherited request announced to the new owner");
+
+  // never across spins, never in the lobby, never without snapshots
+  equal(takeoverChanges(base, { ...asked, room: { ...room, spins_used: 2 } }, "me"), [], "spin changed");
+  equal(takeoverChanges(snap([], [], { status: "lobby", spins_used: 0 }), snap([], [], { status: "lobby", spins_used: 0 }), "me"), [], "lobby");
+  equal(takeoverChanges(null, asked, "me"), [], "no previous snapshot");
+  equal(takeoverChanges(base, { ...asked, requests: undefined }, "me"), [], "no requests list at all");
+});
+
+test("requestFor finds my request for a task in any status; pendingRequests keeps order", () => {
+  const requests = [
+    { id: "r1", task_id: "t", user_id: "ann", status: "declined" },
+    { id: "r2", task_id: "t", user_id: "bob", status: "pending" },
+    { id: "r3", task_id: "u", user_id: "ann", status: "pending" },
+    { id: "r4", task_id: "u", user_id: "cy", status: "withdrawn" }
+  ];
+  equal(requestFor(requests, "t", "ann").id, "r1", "declined request is still found");
+  equal(requestFor(requests, "t", "cy"), null, "none");
+  equal(requestFor(undefined, "t", "ann"), null, "no list");
+  equal(pendingRequests(requests).map((r) => r.id), ["r2", "r3"], "pending only, in order");
+  equal(pendingRequests(null), [], "no list");
 });
 
 // ---------------------------------------------------------------- report

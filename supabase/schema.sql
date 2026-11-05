@@ -5,13 +5,14 @@
 --
 -- Clients (anonymous sign-in users hold the `authenticated` role) can:
 --   * SELECT rows of rooms they are a member of (RLS),
---   * EXECUTE the six RPCs below.
+--   * EXECUTE the nine RPCs below.
 -- Nothing else. All writes go through the RPCs, which take identity from
 -- auth.uid() and never from a parameter.
 --
--- Upgrading from the version without editable tasks: just run this file again.
--- Existing rooms keep their stored tasks; the old task shape (platform/device)
--- is still understood everywhere, so old rooms behave exactly as before.
+-- Upgrading from an earlier version: just run this file again. It adds the
+-- takeover_requests table and its three RPCs. Existing rooms keep their stored
+-- tasks; the old task shape (platform/device) is still understood everywhere,
+-- so old rooms behave exactly as before.
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
@@ -22,6 +23,10 @@ returns integer language sql immutable set search_path = '' as $$ select 30 $$;
 
 create or replace function public.wot_complaint_threshold()
 returns integer language sql immutable set search_path = '' as $$ select 2 $$;
+
+-- How many takeover requests one person may have waiting at the same time (maxPendingRequests in config.js).
+create or replace function public.wot_max_pending_requests()
+returns integer language sql immutable set search_path = '' as $$ select 5 $$;
 
 -- -----------------------------------------------------------------------------
 -- Tables
@@ -74,6 +79,27 @@ create table if not exists public.complaints (
   constraint complaints_pkey primary key (room_id, user_id),   -- one complaint per person per room
   constraint complaints_by_member foreign key (room_id, user_id)
     references public.participants (room_id, user_id) on delete cascade
+);
+
+-- After a spin, a member may ask to take over a task of the latest spin. The moderator or
+-- whoever has the task approves or declines; the requester can withdraw. One row per person
+-- and task per spin: a declined request stays declined for that spin, a withdrawn one can be
+-- made again. A new spin marks every pending request 'superseded'.
+create table if not exists public.takeover_requests (
+  id          uuid        primary key default gen_random_uuid(),
+  room_id     uuid        not null references public.rooms (id) on delete cascade,
+  spin_number smallint    not null check (spin_number in (1, 2)),
+  task_id     text        not null check (char_length(task_id) between 1 and 64),
+  user_id     uuid        not null,                                -- who asks
+  status      text        not null default 'pending'
+                          check (status in ('pending', 'approved', 'declined', 'withdrawn', 'superseded')),
+  created_at  timestamptz not null default now(),
+  resolved_at timestamptz,
+  resolved_by uuid,                                                -- who approved or declined (null when superseded)
+  constraint takeover_requests_one_per_task unique (room_id, spin_number, task_id, user_id),
+  constraint takeover_requests_by_member foreign key (room_id, user_id)
+    references public.participants (room_id, user_id) on delete cascade,
+  constraint takeover_requests_resolved check ((status = 'pending') = (resolved_at is null))
 );
 
 -- -----------------------------------------------------------------------------
@@ -253,6 +279,16 @@ returns text language sql immutable set search_path = '' as $$
     || '.'
 $$;
 
+-- Same rule as canReceiveTask() in domain.js and the device check in commit_spin: a Mac task
+-- needs a Mac, a phone task needs one of the selected phones, both need both.
+create or replace function public._wot_can_receive(p_task jsonb, p_mac boolean, p_android boolean, p_ios boolean)
+returns boolean language sql immutable set search_path = '' as $$
+  select (not public._wot_task_needs_mac(p_task) or coalesce(p_mac, false))
+     and (cardinality(public._wot_task_phones(p_task)) = 0
+          or (coalesce(p_android, false) and 'android' = any (public._wot_task_phones(p_task)))
+          or (coalesce(p_ios, false) and 'ios' = any (public._wot_task_phones(p_task))))
+$$;
+
 -- The full room state a member sees. Called only from the RPCs below.
 create or replace function public._wot_snapshot(p_room_id uuid)
 returns jsonb language sql stable set search_path = '' as $$
@@ -277,7 +313,14 @@ returns jsonb language sql stable set search_path = '' as $$
     'complaints', coalesce((
       select jsonb_agg(jsonb_build_object('user_id', c.user_id, 'created_at', c.created_at)
              order by c.created_at, c.user_id)
-      from public.complaints c where c.room_id = r.id), '[]'::jsonb)
+      from public.complaints c where c.room_id = r.id), '[]'::jsonb),
+    -- takeover requests of the current spin only (a new spin starts with a clean slate)
+    'requests', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', q.id, 'task_id', q.task_id, 'user_id', q.user_id, 'status', q.status,
+               'created_at', q.created_at, 'resolved_at', q.resolved_at, 'resolved_by', q.resolved_by)
+             order by q.created_at, q.id)
+      from public.takeover_requests q where q.room_id = r.id and q.spin_number = r.spins_used), '[]'::jsonb)
   )
   from public.rooms r
   where r.id = p_room_id
@@ -513,6 +556,11 @@ begin
   insert into public.spins (room_id, spin_number, assignments)
   values (p_room_id, p_spin_number, v_stored);
 
+  -- A new spin replaces every assignment, so requests about the old one are over.
+  update public.takeover_requests
+  set status = 'superseded', resolved_at = now()
+  where room_id = p_room_id and status = 'pending';
+
   update public.rooms
   set spins_used = p_spin_number,
       status = case when p_spin_number = 1 then 'spun' else 'final' end,
@@ -584,12 +632,212 @@ begin
 end $$;
 
 -- -----------------------------------------------------------------------------
+-- Takeover requests. All three lock the room row first, like commit_spin, so a
+-- request, an answer and a spin never interleave.
+-- -----------------------------------------------------------------------------
+
+-- Ask to take over a task of the latest spin. Idempotent while the request is pending.
+create or replace function public.request_takeover(p_room_id uuid, p_task_id text)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_uid uuid := auth.uid();
+  v_room public.rooms%rowtype;
+  v_me public.participants%rowtype;
+  v_entry jsonb;
+  v_existing public.takeover_requests%rowtype;
+begin
+  if v_uid is null then
+    perform public._wot_fail('You are not signed in.', 'not_signed_in', '42501');
+  end if;
+  select * into v_room from public.rooms where id = p_room_id for update;
+  if not found then
+    perform public._wot_fail('This room does not exist.', 'room_not_found');
+  end if;
+  select * into v_me from public.participants where room_id = p_room_id and user_id = v_uid;
+  if not found then
+    perform public._wot_fail('Only people in this room can ask to take over a task.', 'not_member', '42501');
+  end if;
+  if v_room.status = 'lobby' then
+    perform public._wot_fail('You can ask to take over a task once the wheel has spun.', 'takeovers_closed');
+  end if;
+  if p_task_id is null or char_length(p_task_id) not between 1 and 64 then
+    perform public._wot_fail('That task is not in this spin.', 'task_not_found', '22023');
+  end if;
+
+  -- The task as it stands in the latest spin
+  select e into v_entry
+  from public.spins s, jsonb_array_elements(s.assignments) e
+  where s.room_id = p_room_id and s.spin_number = v_room.spins_used and (e ->> 'task_id') = p_task_id;
+  if v_entry is null then
+    perform public._wot_fail('That task is not in this spin.', 'task_not_found');
+  end if;
+  if (v_entry ->> 'participant_id') = v_uid::text then
+    perform public._wot_fail('This task is already yours.', 'already_assigned');
+  end if;
+  if not public._wot_can_receive(v_entry -> 'task', v_me.mac, v_me.android, v_me.ios) then
+    perform public._wot_fail('You do not have the Mac or phone this task needs.', 'device_mismatch');
+  end if;
+
+  select * into v_existing from public.takeover_requests
+  where room_id = p_room_id and spin_number = v_room.spins_used and task_id = p_task_id and user_id = v_uid;
+  if found then
+    if v_existing.status = 'pending' then
+      return public._wot_snapshot(p_room_id);  -- already asked: nothing changes
+    end if;
+    -- Declined stays declined for this owner, also after the requester dismissed it (withdrawn
+    -- with resolved_by set). Both are lifted when the task changes hands (see resolve_takeover).
+    if v_existing.status = 'declined' or (v_existing.status = 'withdrawn' and v_existing.resolved_by is not null) then
+      perform public._wot_fail('Your request for this task was declined.', 'request_declined');
+    end if;
+  end if;
+  if (select count(*) from public.takeover_requests
+      where room_id = p_room_id and spin_number = v_room.spins_used and user_id = v_uid and status = 'pending')
+     >= public.wot_max_pending_requests() then
+    perform public._wot_fail(
+      format('You can have at most %s requests waiting. Withdraw one to ask for another.', public.wot_max_pending_requests()),
+      'too_many_requests');
+  end if;
+  if v_existing.id is not null then
+    update public.takeover_requests   -- withdrawn, superseded, or approved and since handed on: ask again
+    set status = 'pending', created_at = now(), resolved_at = null, resolved_by = null
+    where id = v_existing.id;
+  else
+    insert into public.takeover_requests (room_id, spin_number, task_id, user_id)
+    values (p_room_id, v_room.spins_used, p_task_id, v_uid);
+  end if;
+
+  update public.rooms set state_version = state_version + 1 where id = p_room_id;
+  return public._wot_snapshot(p_room_id);
+end $$;
+
+-- Approve (p_approve = true) or decline a pending request. The moderator may answer any
+-- request; the person who has the task may answer requests for it. Approval moves the task
+-- in the stored spin, keeping who had it before in took_over_from. A declined request can
+-- still be approved later (a change of mind); an approved one is settled.
+create or replace function public.resolve_takeover(p_request_id uuid, p_approve boolean)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_uid uuid := auth.uid();
+  v_room_id uuid;
+  v_room public.rooms%rowtype;
+  v_req public.takeover_requests%rowtype;
+  v_spin public.spins%rowtype;
+  v_index integer;
+  v_entry jsonb;
+  v_holder text;
+  v_who public.participants%rowtype;
+begin
+  if v_uid is null then
+    perform public._wot_fail('You are not signed in.', 'not_signed_in', '42501');
+  end if;
+  if p_approve is null then
+    perform public._wot_fail('Say whether the request is approved or declined.', 'invalid_decision', '22023');
+  end if;
+  select room_id into v_room_id from public.takeover_requests where id = p_request_id;
+  if not found then
+    perform public._wot_fail('That request no longer exists. The room has been refreshed.', 'request_not_pending');
+  end if;
+  select * into v_room from public.rooms where id = v_room_id for update;
+  select * into v_req from public.takeover_requests where id = p_request_id;  -- re-read under the lock
+  if found and v_req.spin_number = v_room.spins_used and v_req.status in ('approved', 'declined')
+     and (v_req.status = 'approved') = p_approve then
+    return public._wot_snapshot(v_room.id);  -- someone else just made the same decision: nothing to do
+  end if;
+  if not found or v_req.spin_number <> v_room.spins_used
+     or not (v_req.status = 'pending' or (v_req.status = 'declined' and p_approve)) then
+    perform public._wot_fail('That request is no longer pending. The room has been refreshed.', 'request_not_pending');
+  end if;
+  if not exists (select 1 from public.participants where room_id = v_room.id and user_id = v_uid) then
+    perform public._wot_fail('Only people in this room can answer requests.', 'not_member', '42501');
+  end if;
+
+  select * into v_spin from public.spins where room_id = v_room.id and spin_number = v_room.spins_used for update;
+  select x.ord - 1, x.e into v_index, v_entry
+  from jsonb_array_elements(v_spin.assignments) with ordinality as x(e, ord)
+  where (x.e ->> 'task_id') = v_req.task_id;
+  if v_entry is null then
+    perform public._wot_fail('That task is not in this spin.', 'task_not_found');
+  end if;
+  v_holder := v_entry ->> 'participant_id';
+  if v_uid <> v_room.host_user_id and (v_holder is null or v_holder <> v_uid::text) then
+    perform public._wot_fail('Only the moderator or the person who has the task can answer this request.', 'not_allowed', '42501');
+  end if;
+
+  if p_approve then
+    select * into v_who from public.participants where room_id = v_room.id and user_id = v_req.user_id;
+    if not found then
+      perform public._wot_fail('The person who asked is no longer in this room.', 'requester_gone');
+    end if;
+    if v_holder = v_who.user_id::text then
+      perform public._wot_fail('They already have this task.', 'already_assigned');
+    end if;
+    if not public._wot_can_receive(v_entry -> 'task', v_who.mac, v_who.android, v_who.ios) then
+      perform public._wot_fail('They no longer have the Mac or phone this task needs.', 'device_mismatch');
+    end if;
+    v_entry := v_entry || jsonb_build_object(
+      'participant_id', v_who.user_id,
+      'participant', jsonb_build_object('name', v_who.name, 'team', v_who.team,
+                                        'mac', v_who.mac, 'android', v_who.android, 'ios', v_who.ios),
+      'team_match', case when (v_entry -> 'task' ->> 'team') is null then null
+                         else v_who.team = (v_entry -> 'task' ->> 'team') end,
+      'reason', null,
+      'took_over_from', case when v_holder is null then null
+                             else jsonb_build_object('user_id', v_holder, 'name', v_entry -> 'participant' ->> 'name') end,
+      'took_over_by', v_uid,   -- who approved: the previous owner, or the moderator
+      'took_over_at', now());
+    update public.spins set assignments = jsonb_set(assignments, array[v_index::text], v_entry) where id = v_spin.id;
+    -- The task has a new owner, so a refusal by the previous one no longer binds anyone:
+    -- people it was declined for may ask again. Other pending requests stay and are now
+    -- for the new owner to answer.
+    update public.takeover_requests
+    set status = 'superseded'
+    where room_id = v_room.id and spin_number = v_room.spins_used and task_id = v_req.task_id and id <> p_request_id
+      and (status = 'declined' or (status = 'withdrawn' and resolved_by is not null));
+  end if;
+
+  update public.takeover_requests
+  set status = case when p_approve then 'approved' else 'declined' end, resolved_at = now(), resolved_by = v_uid
+  where id = p_request_id;
+  update public.rooms set state_version = state_version + 1 where id = v_room.id;
+  return public._wot_snapshot(v_room.id);
+end $$;
+
+-- Take back your own pending request, or dismiss a declined one so it no longer waits for a
+-- change of mind (it stays declined for you). Anything else is left as it is.
+create or replace function public.withdraw_takeover(p_request_id uuid)
+returns jsonb language plpgsql security definer set search_path = '' as $$
+declare
+  v_uid uuid := auth.uid();
+  v_room_id uuid;
+  v_req public.takeover_requests%rowtype;
+begin
+  if v_uid is null then
+    perform public._wot_fail('You are not signed in.', 'not_signed_in', '42501');
+  end if;
+  select room_id into v_room_id from public.takeover_requests where id = p_request_id;
+  if not found then
+    perform public._wot_fail('That request no longer exists. The room has been refreshed.', 'request_not_pending');
+  end if;
+  perform 1 from public.rooms where id = v_room_id for update;
+  select * into v_req from public.takeover_requests where id = p_request_id;
+  if not found or v_req.user_id <> v_uid then
+    perform public._wot_fail('You can only withdraw your own request.', 'not_allowed', '42501');
+  end if;
+  if v_req.status in ('pending', 'declined') then
+    update public.takeover_requests set status = 'withdrawn', resolved_at = now() where id = p_request_id;
+    update public.rooms set state_version = state_version + 1 where id = v_room_id;
+  end if;
+  return public._wot_snapshot(v_room_id);
+end $$;
+
+-- -----------------------------------------------------------------------------
 -- Row Level Security: members may read their room; nobody writes directly.
 -- -----------------------------------------------------------------------------
 alter table public.rooms        enable row level security;
 alter table public.participants enable row level security;
 alter table public.spins        enable row level security;
 alter table public.complaints   enable row level security;
+alter table public.takeover_requests enable row level security;
 
 drop policy if exists "members read rooms" on public.rooms;
 create policy "members read rooms" on public.rooms
@@ -607,17 +855,22 @@ drop policy if exists "members read complaints" on public.complaints;
 create policy "members read complaints" on public.complaints
   for select to authenticated using (public.is_room_member(room_id));
 
+drop policy if exists "members read takeover requests" on public.takeover_requests;
+create policy "members read takeover requests" on public.takeover_requests
+  for select to authenticated using (public.is_room_member(room_id));
+
 -- -----------------------------------------------------------------------------
 -- Grants. Supabase grants ALL on new public tables/functions to anon and
 -- authenticated by default, so revoke explicitly, then grant the minimum.
 -- -----------------------------------------------------------------------------
-revoke all on table public.rooms, public.participants, public.spins, public.complaints
+revoke all on table public.rooms, public.participants, public.spins, public.complaints, public.takeover_requests
   from public, anon, authenticated;
-grant select on table public.rooms, public.participants, public.spins, public.complaints
+grant select on table public.rooms, public.participants, public.spins, public.complaints, public.takeover_requests
   to authenticated;
 
 revoke all on function public.wot_room_capacity()               from public, anon, authenticated;
 revoke all on function public.wot_complaint_threshold()         from public, anon, authenticated;
+revoke all on function public.wot_max_pending_requests()        from public, anon, authenticated;
 revoke all on function public._wot_fail(text, text, text)       from public, anon, authenticated;
 revoke all on function public._wot_normalize_code(text)         from public, anon, authenticated;
 revoke all on function public._wot_random_code()                from public, anon, authenticated;
@@ -627,6 +880,7 @@ revoke all on function public._wot_is_string_list(jsonb, integer, integer, text[
 revoke all on function public._wot_task_phones(jsonb)           from public, anon, authenticated;
 revoke all on function public._wot_task_needs_mac(jsonb)        from public, anon, authenticated;
 revoke all on function public._wot_unassigned_reason(text[], boolean) from public, anon, authenticated;
+revoke all on function public._wot_can_receive(jsonb, boolean, boolean, boolean) from public, anon, authenticated;
 revoke all on function public._wot_snapshot(uuid)               from public, anon, authenticated;
 
 revoke all on function public.is_room_member(uuid)              from public, anon, authenticated;
@@ -638,12 +892,18 @@ revoke all on function public.get_room(text)                            from pub
 revoke all on function public.commit_spin(uuid, integer, jsonb)         from public, anon, authenticated;
 revoke all on function public.complain(uuid)                            from public, anon, authenticated;
 revoke all on function public.update_tasks(uuid, jsonb)                 from public, anon, authenticated;
+revoke all on function public.request_takeover(uuid, text)              from public, anon, authenticated;
+revoke all on function public.resolve_takeover(uuid, boolean)           from public, anon, authenticated;
+revoke all on function public.withdraw_takeover(uuid)                   from public, anon, authenticated;
 grant execute on function public.create_room(jsonb, jsonb)              to authenticated;
 grant execute on function public.join_room(text, jsonb)                 to authenticated;
 grant execute on function public.get_room(text)                         to authenticated;
 grant execute on function public.commit_spin(uuid, integer, jsonb)      to authenticated;
 grant execute on function public.complain(uuid)                         to authenticated;
 grant execute on function public.update_tasks(uuid, jsonb)              to authenticated;
+grant execute on function public.request_takeover(uuid, text)           to authenticated;
+grant execute on function public.resolve_takeover(uuid, boolean)        to authenticated;
+grant execute on function public.withdraw_takeover(uuid)                to authenticated;
 
 -- -----------------------------------------------------------------------------
 -- Realtime: every RPC bumps rooms.state_version, so one UPDATE event per change.
