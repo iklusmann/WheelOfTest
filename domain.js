@@ -249,6 +249,61 @@ export function shuffle(items, random) {
   return out;
 }
 
+// ---------------------------------------------------------------- testers
+// A task can have several testers. An assignment is { task_id, task, owners: [...], reason };
+// reason only says why nobody has the task.
+
+/** One tester as stored on an assignment (the database stores its own copy). */
+export function ownerOf(participant, task) {
+  const t = normalizeTask(task);
+  return {
+    user_id: participant.user_id,
+    name: participant.name,
+    team: participant.team,
+    mac: Boolean(participant.mac),
+    android: Boolean(participant.android),
+    ios: Boolean(participant.ios),
+    team_match: t.team == null ? null : participant.team === t.team
+  };
+}
+
+/**
+ * Any stored assignment → { task_id, task, owners, reason }. Spins stored before a task could
+ * have several testers have participant_id / participant (and took_over_* on the entry); they
+ * become a one-person list, so an old room reads exactly as it did.
+ */
+export function normalizeAssignment(a) {
+  const x = a && typeof a === "object" ? a : {};
+  let owners = [];
+  if (Array.isArray(x.owners)) {
+    const seen = new Set();
+    for (const o of x.owners) {
+      if (!o || typeof o.user_id !== "string" || seen.has(o.user_id)) continue;
+      seen.add(o.user_id);
+      owners.push({ ...o, mac: o.mac === true, android: o.android === true, ios: o.ios === true, team_match: o.team_match ?? null });
+    }
+  } else if (typeof x.participant_id === "string" && x.participant_id) {
+    const p = x.participant && typeof x.participant === "object" ? x.participant : {};
+    const owner = {
+      user_id: x.participant_id, name: typeof p.name === "string" ? p.name : "", team: p.team ?? null,
+      mac: p.mac === true, android: p.android === true, ios: p.ios === true, team_match: x.team_match ?? null
+    };
+    if (x.took_over_at) Object.assign(owner, { took_over_from: x.took_over_from ?? null, took_over_by: x.took_over_by ?? null, took_over_at: x.took_over_at });
+    owners = [owner];
+  }
+  return {
+    task_id: String(x.task_id ?? ""),
+    task: normalizeTask(x.task),
+    owners,
+    reason: owners.length === 0 && typeof x.reason === "string" ? x.reason : null
+  };
+}
+
+export const ownerIds = (assignment) => (assignment?.owners ?? []).map((o) => o.user_id);
+export const isOwner = (assignment, userId) => userId != null && (assignment?.owners ?? []).some((o) => o.user_id === userId);
+/** The assignments `userId` tests. */
+export const tasksOf = (assignments, userId) => (Array.isArray(assignments) ? assignments : []).filter((a) => isOwner(a, userId));
+
 // ---------------------------------------------------------------- assignment
 
 const taskSnapshot = normalizeTask;
@@ -287,35 +342,50 @@ function oneTaskEach(tasks, people, random) {
   return given;
 }
 
+/** How many of these tasks a participant has the devices for. */
+export const compatibleCount = (tasks, participant) => tasks.filter((t) => canReceiveTask(t, participant)).length;
+
 /**
- * Online people who can't get even one task with these tasks (more people than tasks, or
- * not enough tasks for the devices they have). How many is exact; with several people in
- * the same situation, which of them are listed is arbitrary.
+ * Online people who will get fewer than `tasksPerPerson` tasks, because there aren't that many
+ * tasks they have the devices for. Exact: a task can have several testers, so anyone gets
+ * min(tasksPerPerson, the tasks they can take). Returns [{ participant, max }].
  */
-export function peopleWithoutTask(tasks, participants) {
-  const online = participants.filter((p) => p && p.online === true);
-  const given = oneTaskEach(tasks, online, () => 0.5);
-  return online.filter((p) => !given.has(p.user_id));
+export function peopleShortOfTasks(tasks, participants, tasksPerPerson = 1) {
+  const want = Math.max(1, Math.trunc(Number(tasksPerPerson)) || 1);
+  return participants
+    .filter((p) => p && p.online === true)
+    .map((p) => ({ participant: p, max: compatibleCount(tasks, p) }))
+    .filter((x) => x.max < want);
 }
 
 /**
- * Assign every task to an online participant.
+ * Assign every task to online participants.
  *
  * tasks: room tasks (current or legacy shape)
  * participants: [{ user_id, name, team, mac, android, ios, online }]
  * random: () => number in [0, 1)
+ * options.tasksPerPerson: at least this many tasks for everyone online (default 1)
  *
  * 1. Everyone online gets one task first, whenever the tasks allow it (see oneTaskEach).
  * 2. The rest: team tasks, then all-teams tasks; each goes to a compatible member of the
  *    task's team if one is online (otherwise anyone compatible), the one with the fewest tasks.
+ *    Now every task someone can take has exactly one tester.
+ * 3. Top up: while someone online has fewer than tasksPerPerson tasks and there is a task they
+ *    can take and don't test yet, the person with the fewest tasks becomes an extra tester of
+ *    such a task: own team's or all-teams tasks first, then the task with the fewest testers.
+ *    So everyone ends with at least min(tasksPerPerson, the tasks they can take), and extra
+ *    testers are spread evenly. With 1, this only covers people step 1 couldn't give a task
+ *    to (more people than tasks), who then test a task together with someone.
  *
- * Returns { ok: true, assignments } with one entry per task, in the order of `tasks`,
+ * Returns { ok: true, assignments } with one entry per task, in the order of `tasks`:
+ * { task_id, task, owners: [{ user_id, name, team, mac, android, ios, team_match }], reason },
  * or { ok: false, error } when nobody is online. A task that needs a Mac or phone nobody
- * online has is returned unassigned with a reason.
+ * online has is returned with no testers and a reason.
  */
-export function assignTasks(tasks, participants, random) {
+export function assignTasks(tasks, participants, random, options = {}) {
   if (!Array.isArray(tasks) || !Array.isArray(participants)) throw new TypeError("tasks and participants must be arrays");
   if (typeof random !== "function") throw new TypeError("random must be a function");
+  const perPerson = Math.max(1, Math.trunc(Number(options.tasksPerPerson ?? 1)) || 1);
 
   const online = participants.filter((p) => p && p.online === true);
   if (online.length === 0) {
@@ -326,14 +396,7 @@ export function assignTasks(tasks, participants, random) {
   const load = new Map(online.map((p) => [p.user_id, 0]));
   const give = (task, chosen) => {
     load.set(chosen.user_id, load.get(chosen.user_id) + 1);
-    byTaskId.set(task.id, {
-      task_id: task.id,
-      task: taskSnapshot(task),
-      participant_id: chosen.user_id,
-      participant: { name: chosen.name, team: chosen.team, mac: Boolean(chosen.mac), android: Boolean(chosen.android), ios: Boolean(chosen.ios) },
-      team_match: task.team == null ? null : chosen.team === task.team,
-      reason: null
-    });
+    byTaskId.set(task.id, { task_id: task.id, task: taskSnapshot(task), owners: [ownerOf(chosen, task)], reason: null });
   };
 
   const people = new Map(online.map((p) => [p.user_id, p]));
@@ -346,14 +409,7 @@ export function assignTasks(tasks, participants, random) {
   for (const task of [...teamTasks, ...neutralTasks]) {
     const candidates = online.filter((p) => canReceiveTask(task, p));
     if (candidates.length === 0) {
-      byTaskId.set(task.id, {
-        task_id: task.id,
-        task: taskSnapshot(task),
-        participant_id: null,
-        participant: null,
-        team_match: null,
-        reason: unassignedReason(task)
-      });
+      byTaskId.set(task.id, { task_id: task.id, task: taskSnapshot(task), owners: [], reason: unassignedReason(task) });
       continue;
     }
     const preferred = task.team == null ? [] : candidates.filter((p) => p.team === task.team);
@@ -363,7 +419,115 @@ export function assignTasks(tasks, participants, random) {
     give(task, tied[pickIndex(tied.length, random)]);
   }
 
+  // 3. Top up to tasksPerPerson
+  const slots = tasks.map((task) => ({ task, entry: byTaskId.get(task.id) }));
+  const extra = new Set();   // "task id|user id" of testers added in this step (step 4 may move them)
+  const openFor = (p) => slots.filter(({ task, entry }) => !isOwner(entry, p.user_id) && canReceiveTask(task, p));
+  // A person's choices: own team's and all-teams tasks if any, else anything they can take
+  const poolFor = (p) => {
+    const open = openFor(p);
+    const preferred = open.filter(({ task }) => task.team == null || task.team === p.team);
+    return preferred.length > 0 ? preferred : open;
+  };
+  const fewestIn = (pool) => Math.min(...pool.map(({ entry }) => entry.owners.length));
+  for (;;) {
+    const needy = online.filter((p) => load.get(p.user_id) < perPerson && openFor(p).length > 0);
+    if (needy.length === 0) break;
+    // The fewest tasks first; among those, whoever can reach the least-shared task, so
+    // extra testers spread over the tasks instead of piling up on one
+    const least = Math.min(...needy.map((p) => load.get(p.user_id)));
+    const behind = needy.filter((p) => load.get(p.user_id) === least).map((p) => ({ p, pool: poolFor(p) }));
+    const lowest = Math.min(...behind.map(({ pool }) => fewestIn(pool)));
+    const tied = behind.filter(({ pool }) => fewestIn(pool) === lowest);
+    const { p: person, pool } = tied[pickIndex(tied.length, random)];
+    const choices = pool.filter(({ entry }) => entry.owners.length === lowest);
+    const pick = choices[pickIndex(choices.length, random)];
+    pick.entry.owners.push(ownerOf(person, pick.task));
+    pick.entry.reason = null;
+    extra.add(`${pick.task.id}|${person.user_id}`);
+    load.set(person.user_id, load.get(person.user_id) + 1);
+  }
+
+  // 4. Even out: while one task has at least two testers more than another, move an extra tester
+  //    (never the first one) from the fuller task to the emptier one, if they can take it and it
+  //    is not worse for their team. Nobody's count changes; every move lowers the spread, so this ends.
+  const preferredFor = (task, p) => task.team == null || task.team === p.team;
+  for (let moved = true; moved;) {
+    moved = false;
+    const bySize = [...slots].filter(({ entry }) => entry.owners.length > 0).sort((x, y) => y.entry.owners.length - x.entry.owners.length);
+    for (const from of bySize) {
+      for (const to of [...bySize].reverse()) {
+        if (from.entry.owners.length - to.entry.owners.length < 2) break;
+        const mover = from.entry.owners.find((o, i) => i > 0 && extra.has(`${from.task.id}|${o.user_id}`)
+          && !isOwner(to.entry, o.user_id) && canReceiveTask(to.task, people.get(o.user_id))
+          && (preferredFor(to.task, o) || !preferredFor(from.task, o)));
+        if (!mover) continue;
+        from.entry.owners = from.entry.owners.filter((o) => o !== mover);
+        to.entry.owners.push(ownerOf(people.get(mover.user_id), to.task));
+        extra.delete(`${from.task.id}|${mover.user_id}`);
+        extra.add(`${to.task.id}|${mover.user_id}`);
+        moved = true;
+        break;
+      }
+      if (moved) break;
+    }
+  }
+
   return { ok: true, error: null, assignments: tasks.map((t) => byTaskId.get(t.id)) };
+}
+
+/**
+ * Who to suggest as the tester of a task the moderator adds after the spin: someone online
+ * with the devices it needs and the fewest tasks, from the task's team if possible. Null if
+ * nobody online can take it.
+ */
+export function suggestOwner(task, participants, assignments, isOnline = () => true) {
+  const able = participants.filter((p) => isOnline(p.user_id) && canReceiveTask(task, p));
+  if (able.length === 0) return null;
+  const team = normalizeTask(task).team;
+  const own = team == null ? [] : able.filter((p) => p.team === team);
+  const pool = own.length ? own : able;
+  const count = (p) => tasksOf(assignments, p.user_id).length;
+  return pool.reduce((best, p) => (count(p) < count(best) ? p : best), pool[0]).user_id;
+}
+
+// ---------------------------------------------------------------- room settings
+
+/** Tasks per person: a whole number from 1 to CONFIG.maxTasksPerPerson. Mirrors _wot_clean_tasks_per_person(). */
+export function validateTasksPerPerson(input, max = CONFIG.maxTasksPerPerson) {
+  const text = typeof input === "number" ? String(input) : typeof input === "string" ? input.trim() : "";
+  const n = /^\d+$/.test(text) ? Number(text) : NaN;
+  if (!Number.isInteger(n) || n < 1 || n > max) return { ok: false, error: `Enter a whole number from 1 to ${max}.`, value: null };
+  return { ok: true, error: null, value: n };
+}
+
+/**
+ * Session links from the form: [{ label, url }] rows; a row with neither is skipped. Mirrors
+ * _wot_clean_links(): at most 4, label up to 40 characters, url http(s) up to 500, no spaces.
+ * Returns { ok, errors: [{ label?, url? } per row], value: [{ label, url }] }.
+ */
+export function validateLinks(rows, options = {}) {
+  const maxLinks = options.maxLinks ?? CONFIG.maxLinks;
+  const list = Array.isArray(rows) ? rows : [];
+  const errors = list.map(() => ({}));
+  const value = [];
+  list.forEach((row, i) => {
+    const label = typeof row?.label === "string" ? row.label.trim() : "";
+    const url = typeof row?.url === "string" ? row.url.trim() : "";
+    if (!label && !url) return;
+    if (Array.from(label).length > 40) errors[i].label = "Use at most 40 characters.";
+    else if (CONTROL_CHARS.test(label)) errors[i].label = "The label contains characters that are not allowed.";
+    let parsed = null;
+    try { parsed = new URL(url); } catch { /* not a URL */ }
+    if (!url) errors[i].url = "Add the address, or clear the label.";
+    else if (url.length > 500) errors[i].url = "Use at most 500 characters.";
+    else if (!parsed || !/^https?:$/.test(parsed.protocol) || /\s/.test(url) || !/^https?:\/\/[^\s/]+/i.test(url)) {
+      errors[i].url = "Enter an address that starts with https:// or http://.";
+    }
+    if (!errors[i].label && !errors[i].url) value.push({ label, url });
+  });
+  const ok = errors.every((e) => !e.label && !e.url) && value.length <= maxLinks;
+  return { ok, errors, value: ok ? value : null };
 }
 
 // ---------------------------------------------------------------- room rules
@@ -394,9 +558,9 @@ export function tasksEditable(room) {
 }
 
 // ---------------------------------------------------------------- takeovers
-// After a spin, a member may ask to take over a task of the latest spin. The moderator or
-// whoever has the task answers. These mirror the checks in request_takeover and
-// resolve_takeover; the database remains the authority.
+// After a spin, a member may ask to take over a task of the latest spin: one tester's place,
+// or the task itself while nobody has it. The moderator or that tester answers. These mirror
+// the checks in request_takeover and resolve_takeover; the database remains the authority.
 
 /** Requests are possible once the wheel has spun, and still after the final spin. */
 export function takeoversOpen(room) {
@@ -404,23 +568,41 @@ export function takeoversOpen(room) {
 }
 
 /**
- * Whether `me` (a participant: { user_id, mac, android, ios }) may ask for this assignment's
- * task: it isn't theirs already, and they have the Mac or phone it needs. Unassigned tasks
- * can be asked for too.
+ * Whether `me` (a participant: { user_id, mac, android, ios }) may ask for a place on this
+ * assignment's task: they don't test it already, and they have the Mac or phone it needs.
+ * Unassigned tasks can be asked for too.
  */
 export function canRequestTakeover(assignment, me) {
   if (!assignment || !me) return false;
-  if (assignment.participant_id != null && assignment.participant_id === me.user_id) return false;
+  if (isOwner(assignment, me.user_id)) return false;
   return canReceiveTask(assignment.task, me);
 }
 
-/** Who may approve or decline a request for this assignment: the moderator, or whoever has the task now. */
-export function canResolveTakeover(assignment, room, userId) {
-  if (!assignment || !room || !userId) return false;
-  return userId === room.host_user_id || (assignment.participant_id != null && assignment.participant_id === userId);
+/**
+ * Whether `me` may add themselves to this task with "Assign me": they don't test it yet, have
+ * the devices, and it has fewer than `max` testers. Mirrors join_task().
+ */
+export function canJoinTask(assignment, me, max = CONFIG.maxTestersToJoin) {
+  if (!assignment || !me) return false;
+  return !isOwner(assignment, me.user_id) && canReceiveTask(assignment.task, me) && assignment.owners.length < max;
 }
 
-/** The request `userId` made for `taskId` in this spin (whatever its status), or null. */
+/** Whether `userId` may leave this task: they added themselves to it. Mirrors leave_task(). */
+export function canLeaveTask(assignment, userId) {
+  return Boolean(assignment?.owners.find((o) => o.user_id === userId)?.joined_at);
+}
+
+/**
+ * Who may approve or decline `request` for this assignment: the moderator, or the tester whose
+ * place it asks for (while they still have it). A request for an unassigned task: the moderator.
+ */
+export function canResolveTakeover(assignment, room, userId, request) {
+  if (!assignment || !room || !userId) return false;
+  if (userId === room.host_user_id) return true;
+  return request?.from_user_id != null && request.from_user_id === userId && isOwner(assignment, userId);
+}
+
+/** The request `userId` made for `taskId` in this spin (whatever its status), or null. One per person and task. */
 export function requestFor(requests, taskId, userId) {
   return (Array.isArray(requests) ? requests : []).find((r) => r.task_id === taskId && r.user_id === userId) ?? null;
 }
@@ -431,11 +613,18 @@ export function pendingRequests(requests) {
 }
 
 /**
- * What other people's takeover actions changed for `me` between two snapshots of the same
- * spin, so the app can say it out loud: a request that now waits for me (for a task I hold,
- * or any task if I am the moderator), my request being approved or declined, and a task of
- * mine going to someone else. Nothing is reported across a spin (the reveal covers that).
- * Returns [{ kind: "asked" | "approved" | "declined" | "lost", task, by?, to?, mine? }].
+ * What other people changed for `me` between two snapshots of the same spin, so the app can
+ * say it out loud. Nothing is reported across a spin (the reveal covers that). Kinds:
+ *   asked     a request now waits for me: for my place, or any request if I am the moderator
+ *   approved  my request was approved (or I got the task some other way while asking)
+ *   declined  my request was declined
+ *   dropped   my request no longer applies (the testers changed, or the task was deleted)
+ *   given     the moderator put me on a task
+ *   joined    someone assigned themselves to a task I test (by)
+ *   added     the moderator added a task and put me on it
+ *   lost      I am no longer a tester of a task (to: who took my place, if someone did)
+ *   removed   the moderator deleted a task I tested
+ * Returns [{ kind, task, by?, from?, to?, mine? }].
  */
 export function takeoverChanges(prev, next, me) {
   if (!prev?.room || !next?.room || !me) return [];
@@ -445,35 +634,55 @@ export function takeoverChanges(prev, next, me) {
   const after = spinOf(next);
   if (!before || !after) return [];
   const isHost = next.room.host_user_id === me;
-  const heldBefore = new Map(before.assignments.map((a) => [a.task_id, a.participant_id ?? null]));
+  const ownersBefore = new Map(before.assignments.map((a) => [a.task_id, new Set(ownerIds(a))]));
+  const afterById = new Map(after.assignments.map((a) => [a.task_id, a]));
+  const beforeById = new Map(before.assignments.map((a) => [a.task_id, a]));
   const requestsBefore = Array.isArray(prev.requests) ? prev.requests : [];
   const requestsAfter = Array.isArray(next.requests) ? next.requests : [];
   const changes = [];
 
-  // Requests now waiting for me: new ones, and pending ones for a task that just became mine
-  const seen = new Set(pendingRequests(requestsBefore).map((r) => `${r.id}|${r.created_at}`));
+  // Requests now waiting for me: new ones (or re-made, or moved to my place)
+  const key = (r) => `${r.id}|${r.created_at}|${r.from_user_id ?? ""}`;
+  const seen = new Set(pendingRequests(requestsBefore).map(key));
   for (const r of pendingRequests(requestsAfter)) {
-    if (r.user_id === me) continue;
-    const a = after.assignments.find((x) => x.task_id === r.task_id);
+    if (r.user_id === me || seen.has(key(r))) continue;
+    const a = afterById.get(r.task_id);
     if (!a) continue;
-    const mine = a.participant_id === me;
-    const fresh = !seen.has(`${r.id}|${r.created_at}`);
-    const justMine = mine && heldBefore.get(r.task_id) !== me;
-    if ((fresh && (mine || isHost)) || justMine) changes.push({ kind: "asked", task: a.task, by: r.user_id, mine });
+    const mine = r.from_user_id != null && r.from_user_id === me && isOwner(a, me);
+    if (mine || isHost) changes.push({ kind: "asked", task: a.task, by: r.user_id, from: r.from_user_id ?? null, mine });
   }
-  // My requests that were answered (a declined one can still be approved later)
+  // My requests that were answered or dropped (a declined one can still be approved later)
+  const approvedTasks = new Set();
   for (const r of requestsAfter) {
     if (r.user_id !== me || r.status === "pending") continue;
     const was = requestsBefore.find((p) => p.id === r.id);
     if (!was || was.status === r.status || !["pending", "declined"].includes(was.status)) continue;
-    const a = after.assignments.find((x) => x.task_id === r.task_id);
+    const a = afterById.get(r.task_id) ?? beforeById.get(r.task_id);
     if (!a) continue;
-    if (r.status === "approved") changes.push({ kind: "approved", task: a.task });
+    if (r.status === "approved") { approvedTasks.add(r.task_id); changes.push({ kind: "approved", task: a.task }); }
     else if (r.status === "declined") changes.push({ kind: "declined", task: a.task, by: r.resolved_by ?? null });
+    else if (r.status === "superseded" && was.status === "pending") changes.push({ kind: "dropped", task: a.task, deleted: !afterById.has(r.task_id) });
   }
-  // Tasks I held that went to someone else
+  // Tasks I was put on, taken off, that were added or deleted
   for (const a of after.assignments) {
-    if (heldBefore.get(a.task_id) === me && a.participant_id !== me) changes.push({ kind: "lost", task: a.task, to: a.participant_id ?? null });
+    const had = ownersBefore.get(a.task_id);
+    const hasNow = isOwner(a, me);
+    if (!had) {
+      if (hasNow) changes.push({ kind: "added", task: a.task });
+      continue;
+    }
+    if (had.has(me) && !hasNow) {
+      const successor = a.owners.find((o) => o.took_over_from?.user_id === me);
+      changes.push({ kind: "lost", task: a.task, to: successor?.user_id ?? null });
+    } else if (!had.has(me) && hasNow && !approvedTasks.has(a.task_id) && !a.owners.find((o) => o.user_id === me)?.joined_at) {
+      changes.push({ kind: "given", task: a.task });
+    }
+    if (had.has(me) && hasNow) {
+      for (const o of a.owners) if (o.joined_at && o.user_id !== me && !had.has(o.user_id)) changes.push({ kind: "joined", task: a.task, by: o.user_id });
+    }
+  }
+  for (const a of before.assignments) {
+    if (!afterById.has(a.task_id) && isOwner(a, me)) changes.push({ kind: "removed", task: a.task });
   }
   return changes;
 }

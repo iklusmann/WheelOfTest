@@ -5,7 +5,8 @@ import { THEMES, BROWSERS, USER_LEVELS, defaultTasks } from "./tasks.js";
 import {
   validateProfile, normalizeRoomCode, assignTasks, spinRule,
   normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable,
-  withCriticalFlows, CRITICAL_FLOW_COUNT, takeoverChanges
+  withCriticalFlows, CRITICAL_FLOW_COUNT, takeoverChanges, takeoversOpen,
+  normalizeAssignment, ownerIds, tasksOf, suggestOwner, validateTasksPerPerson, validateLinks
 } from "./domain.js";
 import * as backend from "./backend.js";
 import * as ui from "./ui.js";
@@ -22,7 +23,7 @@ const state = {
   connectionDetail: "",
   synced: false,             // room re-fetched since the last (re)subscribe
   presenceReady: false,      // at least one presence sync since the last (re)subscribe
-  busy: null,                // "spin" | "complain" | "tasks" | "takeover" | null
+  busy: null,                // "spin" | "complain" | "tasks" | "takeover" | "settings" | "moderator" | null
   stageSpin: 0,              // spin shown on the stage; 0 = wheel
   revealing: false,
   mineOnly: false,
@@ -31,7 +32,9 @@ const state = {
   formMode: "create",
   draftTasks: defaultTasks(),  // create form: the tasks the new room will start with
   draftOpen: false,            // create form: task list expanded
-  editor: null                 // open task editor: { scope: "draft" | "room", taskId: string | null }
+  editor: null,                // open task editor: { scope: "draft" | "room" | "spin", taskId: string | null }
+  testers: null,               // open testers dialog: { taskId }
+  linksEditing: false          // the moderator's links form is open
 };
 
 let subscription = null;
@@ -74,23 +77,44 @@ function render() {
   if (!subscription || !state.snapshot) return;
   // The room left the lobby (e.g. the moderator spun in another tab): the tasks are locked now.
   if (state.editor?.scope === "room" && !tasksEditable(state.snapshot.room)) closeEditor();
+  // A spin landed (or the first spin is shown): post-spin changes were for the spin before it.
+  if (state.editor?.scope === "spin" && !spinEditable()) closeEditor();
+  if (state.testers && !spinEditable()) closeTesters();
   ui.renderRoom(state);
 }
 
+/** The spin the moderator's post-spin changes apply to is on screen, and nothing else is running. */
+function spinEditable() {
+  const snap = state.snapshot;
+  return Boolean(snap) && snap.room.host_user_id === state.me && takeoversOpen(snap.room)
+    && state.stageSpin === snap.room.spins_used && !state.showFirst && !state.revealing;
+}
+
+const canEditSpin = () => spinEditable() && memberCanAct();
+const currentSpin = () => state.snapshot?.spins.find((s) => s.spin_number === state.snapshot.room.spins_used) ?? null;
+const isOnlineNow = (userId) => userId === state.me ? state.connection === "connected" : state.online.has(userId);
+
 /**
- * Rooms created before tasks were editable store an older task shape; read both. A database
- * from before takeover requests sends no `requests` list; treat that as none.
+ * Read any stored state in the current shape: rooms created before tasks were editable store an
+ * older task shape; spins from before several testers per task have one participant per task.
+ * A database from before these features sends no requests, settings or links: no requests, one
+ * task per person, and the configured default links.
  */
 function normalizeSnapshot(snap) {
   if (!snap?.room) return snap;
+  const n = Number(snap.room.tasks_per_person);
   return {
     ...snap,
-    room: { ...snap.room, tasks: (snap.room.tasks ?? []).map(normalizeTask) },
-    spins: (snap.spins ?? []).map((s) => ({
-      ...s,
-      assignments: (s.assignments ?? []).map((a) => ({ ...a, task: normalizeTask(a.task) }))
-    })),
-    requests: Array.isArray(snap.requests) ? snap.requests : []
+    room: {
+      ...snap.room,
+      tasks: (snap.room.tasks ?? []).map(normalizeTask),
+      tasks_per_person: Number.isInteger(n) && n >= 1 ? n : 1,
+      links: Array.isArray(snap.room.links)
+        ? snap.room.links.filter((l) => l && typeof l.url === "string").map((l) => ({ label: typeof l.label === "string" ? l.label : "", url: l.url }))
+        : CONFIG.sessionLinks
+    },
+    spins: (snap.spins ?? []).map((s) => ({ ...s, assignments: (s.assignments ?? []).map(normalizeAssignment) })),
+    requests: (Array.isArray(snap.requests) ? snap.requests : []).map((r) => ({ ...r, from_user_id: r.from_user_id ?? null }))
   };
 }
 
@@ -106,7 +130,8 @@ async function route() {
     state.formMode = "create";
     state.draftTasks = defaultTasks();  // every new room starts from the defaults
     state.draftOpen = false;
-    ui.renderForm({ mode: "create", profile: loadProfile() });
+    // New rooms start with one task per person and the configured links, both changeable here
+    ui.renderForm({ mode: "create", profile: loadProfile(), settings: { tasksPerPerson: 1, links: CONFIG.sessionLinks } });
     return renderDraft();
   }
 
@@ -138,12 +163,22 @@ async function onFormSubmit(event) {
   const result = validateProfile(ui.readForm());
   ui.setFormErrors(result.errors);
   ui.setFormError(null);
-  if (!result.ok) return;
-
   const mode = state.formMode;
+  if (!result.ok) {
+    if (mode === "create") ui.setSettingsErrors({});
+    return;
+  }
+
   const code = state.code;
   const tasks = state.draftTasks;
+  let settings = null;
   if (mode === "create") {
+    const raw = ui.readSettingsForm();
+    const perPerson = validateTasksPerPerson(raw.tasks_per_person);
+    const links = validateLinks(raw.links);
+    ui.setSettingsErrors({ tasksPerPerson: perPerson.error, links: links.errors });
+    if (!perPerson.ok || !links.ok) return;
+    settings = { tasks_per_person: perPerson.value, links: links.value };
     const check = validateTaskList(tasks);
     if (!check.ok) return ui.setFormError(check.error);
   }
@@ -151,7 +186,7 @@ async function onFormSubmit(event) {
   try {
     state.me = await backend.ensureSession();
     const snap = mode === "create"
-      ? await backend.createRoom(result.value, tasks)
+      ? await backend.createRoom(result.value, tasks, settings)
       : await backend.joinRoom(code, result.value);
     saveProfile(result.value);
     if (mode === "create") history.pushState(null, "", roomUrl(snap.room.code));
@@ -182,7 +217,9 @@ function enterRoom(raw) {
     revealing: false,
     mineOnly: false,
     showFirst: false,
-    alert: null
+    alert: null,
+    testers: null,
+    linksEditing: false
   });
   document.title = `Room ${snap.room.code} · WheelOfTest`;
   ui.enterRoomView(snap.room.code);
@@ -302,7 +339,7 @@ function applySnapshot(raw, reason) {
   // Not after a reconnect ("subscribe"): the changes may be old news, and the table shows them anyway.
   // Not while my own takeover action is in flight either: its realtime event can land before the
   // RPC answers, and that action announces its own result.
-  if (reason === "event" && prev && !state.revealing && state.busy !== "takeover") {
+  if (reason === "event" && prev && !state.revealing && !["takeover", "moderator", "settings"].includes(state.busy)) {
     announceTakeovers(takeoverChanges(prev, snap, state.me));
   }
 }
@@ -315,14 +352,21 @@ function announceTakeovers(changes) {
 function takeoverLines(changes) {
   const snap = state.snapshot;
   const name = (id) => snap.participants.find((p) => p.user_id === id)?.name ?? "Someone";
-  const mine = snap.spins.find((s) => s.spin_number === snap.room.spins_used)
-    ?.assignments.filter((a) => a.participant_id === state.me).length ?? 0;
+  const count = tasksOf(currentSpin()?.assignments, state.me).length;
+  const youHave = `You have ${count} task${count === 1 ? "" : "s"}.`;
   return changes.map((c) => {
     const task = ui.describeTask(c.task);
-    if (c.kind === "asked") return `${name(c.by)} asks to take over ${task}${c.mine ? " from you" : ""}.`;
-    if (c.kind === "approved") return `${task} is now yours. You have ${mine} task${mine === 1 ? "" : "s"}.`;
-    if (c.kind === "declined") return `Your request for ${task} was declined.`;
-    return `${task} went to ${c.to ? name(c.to) : "nobody"}. You have ${mine} task${mine === 1 ? "" : "s"}.`;
+    switch (c.kind) {
+      case "asked": return `${name(c.by)} asks to take over ${task}${c.mine ? " from you" : c.from ? ` from ${name(c.from)}` : ""}.`;
+      case "approved": return `${task} is now yours. ${youHave}`;
+      case "declined": return `Your request for ${task} was declined.`;
+      case "dropped": return c.deleted ? `The moderator deleted ${task}, so your request for it is over.` : `Your request for ${task} no longer applies: its testers changed.`;
+      case "given": return `The moderator gave you ${task}. ${youHave}`;
+      case "joined": return `${name(c.by)} joined you on ${task}.`;
+      case "added": return `The moderator added ${task} and gave it to you. ${youHave}`;
+      case "removed": return `The moderator deleted ${task}. ${youHave}`;
+      default: return c.to ? `${task} went to ${name(c.to)}. ${youHave}` : `You are no longer on ${task}. ${youHave}`;
+    }
   });
 }
 
@@ -345,8 +389,7 @@ async function startReveal(target) {
       state.revealing = false;
       state.stageSpin = Math.max(state.stageSpin, target);
       render();
-      const mine = state.snapshot.spins.find((s) => s.spin_number === target)
-        ?.assignments.filter((a) => a.participant_id === state.me).length ?? 0;
+      const mine = tasksOf(state.snapshot.spins.find((s) => s.spin_number === target)?.assignments, state.me).length;
       ui.announce(`${target === 2 ? "Final result is in" : "The wheel has spun"}. You have ${mine} task${mine === 1 ? "" : "s"}.`);
       if (!document.activeElement || document.activeElement === document.body) ui.focusResultTitle();
       const latest = latestSpin(state.snapshot);
@@ -373,9 +416,10 @@ async function onSpin() {
       ...p,
       online: p.user_id === state.me || state.online.has(p.user_id)
     }));
-    const result = assignTasks(snap.room.tasks, participants, secureRandom);
+    const result = assignTasks(snap.room.tasks, participants, secureRandom, { tasksPerPerson: snap.room.tasks_per_person });
     if (!result.ok) throw new Error(result.error);
-    const next = await backend.commitSpin(snap.room.id, rule.spinNumber, result.assignments);
+    const payload = result.assignments.map((a) => ({ task_id: a.task_id, task: a.task, owner_ids: ownerIds(a) }));
+    const next = await backend.commitSpin(snap.room.id, rule.spinNumber, payload);
     if (mySession !== session) return;
     state.busy = null;
     applySnapshot(next, "action");
@@ -451,12 +495,32 @@ async function takeoverAction(call, { taskId, done, failed, focus }) {
   }
 }
 
-function onRequestTakeover(taskId) {
-  takeoverAction((snap) => backend.requestTakeover(snap.room.id, taskId), {
+function onRequestTakeover(taskId, fromUserId) {
+  takeoverAction((snap) => backend.requestTakeover(snap.room.id, taskId, fromUserId || null), {
     taskId,
     done: "Request sent. The moderator or the person who has the task can approve it.",
     failed: "Couldn't send the request",
     focus: () => ui.focusTakeover(taskId)
+  });
+}
+
+function onJoinTask(taskId) {
+  const task = currentSpin()?.assignments.find((a) => a.task_id === taskId)?.task;
+  takeoverAction((snap) => backend.joinTask(snap.room.id, snap.room.spins_used, taskId), {
+    taskId,
+    done: `You are now on ${task ? ui.describeTask(task) : "the task"}.`,
+    failed: "Couldn't assign you",
+    focus: () => ui.focusRowControl(taskId, "leave")
+  });
+}
+
+function onLeaveTask(taskId) {
+  const task = currentSpin()?.assignments.find((a) => a.task_id === taskId)?.task;
+  takeoverAction((snap) => backend.leaveTask(snap.room.id, snap.room.spins_used, taskId), {
+    taskId,
+    done: `You left ${task ? ui.describeTask(task) : "the task"}.`,
+    failed: "Couldn't leave the task",
+    focus: () => ui.focusRowControl(taskId, "join")
   });
 }
 
@@ -479,15 +543,192 @@ function onResolveTakeover(requestId, approve, taskId) {
   });
 }
 
-/** Take over / Withdraw / Dismiss in the table, Approve / Decline / Withdraw in the requests list (event delegation). */
+/**
+ * Clicks in the result area (event delegation): Take over / Withdraw / Dismiss in the table,
+ * Approve / Decline / Withdraw in the requests list, and the moderator's Add task, Change
+ * testers, Edit and Delete.
+ */
 function onTakeoverClick(event) {
   const button = event.target.closest("button[data-action]");
   if (!button || button.disabled) return;
   const { action, taskId, requestId } = button.dataset;
-  if (action === "request") onRequestTakeover(taskId);
+  if (action === "add-task") openEditor("spin", null);
+  else if (action === "edit-task") openEditor("spin", taskId);
+  else if (action === "testers") openTesters(taskId);
+  else if (action === "delete-task") { if (ui.confirmPress(button)) deleteTask("spin", taskId); }
+  else if (action === "join") onJoinTask(taskId);
+  else if (action === "leave") { if (ui.confirmPress(button)) onLeaveTask(taskId); }
+  else if (action === "request") onRequestTakeover(taskId, button.dataset.from);
   else if (action === "withdraw") onWithdrawTakeover(requestId, taskId);
   else if (action === "approve") onResolveTakeover(requestId, true, taskId);
   else if (action === "decline") { if (ui.confirmPress(button)) onResolveTakeover(requestId, false, taskId); }
+}
+
+// ------------------------------------------------------------------ the moderator after the spin
+// Add, edit and delete tasks, and change who tests them. Each change is one RPC on the current
+// spin; the snapshot it returns is applied like any other action.
+
+/**
+ * Run one moderator RPC with the room marked busy. Resolves to { ok } or { ok: false, error, code }.
+ * When the room moved on (another spin, a task gone), a re-fetch follows.
+ */
+async function moderatorCall(call, busy = "moderator", taskId = null) {
+  const snap = state.snapshot;
+  if (!snap || !memberCanAct()) return { ok: false, error: "The room is busy or still syncing. Try again in a moment." };
+  state.busy = busy;
+  state.alert = null;
+  render();
+  const mySession = session;
+  try {
+    const next = await call(snap);
+    if (mySession !== session) return { ok: false, stale: true };
+    state.busy = null;
+    applySnapshot(next, "action");
+    render();
+    // Other people's changes that arrived meanwhile were kept quiet (busy); the caller says them after its own
+    const others = takeoverChanges(snap, state.snapshot, state.me).filter((c) => c.task.id !== taskId);
+    return { ok: true, others: takeoverLines(others) };
+  } catch (error) {
+    if (mySession !== session) return { ok: false, stale: true };
+    state.busy = null;
+    render();
+    const moved = ["stale_spin", "task_not_found", "task_exists", "not_host", "not_spun", "settings_locked", "last_task"];
+    if (moved.includes(error.code)) refresh("event");
+    return { ok: false, error: error.message, code: error.code };
+  }
+}
+
+/**
+ * The testers to save: the current ones, minus the people the moderator unchecked, plus the ones
+ * they checked (relative to what the dialog showed when it opened). Order: current, then new.
+ */
+function applyTesterChanges(current, opened, chosen) {
+  const removed = opened.filter((id) => !chosen.includes(id));
+  const added = chosen.filter((id) => !opened.includes(id));
+  const kept = current.filter((id) => !removed.includes(id));
+  return [...kept, ...added.filter((id) => !kept.includes(id))];
+}
+
+const namesOf = (ids) => {
+  const names = ids.map((id) => state.snapshot.participants.find((p) => p.user_id === id)?.name ?? "someone");
+  return names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+};
+
+// ---- who tests a task
+
+let testersOpener = null;
+let testersReturn = null;
+
+function openTesters(taskId) {
+  if (state.testers || state.editor || !canEditSpin()) return;
+  const entry = currentSpin()?.assignments.find((a) => a.task_id === taskId);
+  if (!entry) return;
+  state.testers = { taskId, opened: ownerIds(entry) };
+  testersOpener = document.activeElement;
+  ui.openTestersDialog({ task: entry.task, participants: state.snapshot.participants, selected: ownerIds(entry), isOnline: isOnlineNow });
+}
+
+function closeTesters() {
+  if (!state.testers) return;
+  testersReturn = state.testers.taskId;
+  state.testers = null;
+  ui.closeTestersDialog();
+}
+
+function onTestersClosed() {
+  if (ui.els.testersDialog.open) return;
+  const taskId = testersReturn ?? state.testers?.taskId ?? null;
+  state.testers = null;   // also covers Escape
+  testersReturn = null;
+  const current = document.activeElement;
+  const untouched = !current || current === document.body || current === testersOpener || ui.els.testersDialog.contains(current);
+  testersOpener = null;
+  if (taskId && untouched) ui.focusRowControl(taskId, "testers");
+}
+
+async function onTestersSubmit(event) {
+  event.preventDefault();
+  const open = state.testers;
+  if (!open || ui.testersBusy()) return;
+  const entry = currentSpin()?.assignments.find((a) => a.task_id === open.taskId);
+  const task = state.snapshot.room.tasks.find((t) => t.id === open.taskId);
+  if (!entry || !task) return closeTesters();
+  // Testers who stay keep their place in the list; new ones follow, in the order shown
+  // Apply only what the moderator changed in the dialog to the testers as they are now, so a
+  // takeover approved while it was open isn't undone
+  const owners = applyTesterChanges(ownerIds(entry), open.opened, ui.readTesters());
+  const current = ownerIds(entry);
+  if (owners.length === current.length && owners.every((id, i) => id === current[i])) return closeTesters();
+
+  ui.setTestersBusy(true);
+  ui.setTestersError(null);
+  const outcome = await moderatorCall((snap) => backend.saveTask(snap.room.id, snap.room.spins_used, task, owners, false), "moderator", task.id);
+  if (state.testers !== open) return;   // closed meanwhile (a spin landed, we left the room)
+  ui.setTestersBusy(false);
+  if (outcome.ok) {
+    closeTesters();
+    ui.announce([owners.length ? `Testers saved. ${ui.describeTask(task)} now goes to ${namesOf(owners)}.` : `${ui.describeTask(task)} is now unassigned.`, ...outcome.others].join(" "));
+  } else if (!outcome.stale) {
+    ui.setTestersError(`Couldn't save the testers: ${outcome.error}`);
+  }
+}
+
+// ---- room settings: tasks per person (lobby) and the session links (any time)
+
+async function saveTasksPerPerson(value, focusAfter = null) {
+  const room = state.snapshot?.room;
+  if (!room || !ui.canEditRoomTasks(state) || value === room.tasks_per_person) return;
+  const outcome = await moderatorCall((snap) => backend.updateSettings(snap.room.id, { tasks_per_person: value }), "settings");
+  if (outcome.ok) ui.announce(`Tasks per person: ${value}.`);
+  else if (!outcome.stale) { state.alert = `Couldn't change tasks per person: ${outcome.error}`; render(); }
+  // The stepper was disabled while saving; put focus back where it was (the other button at a limit)
+  ui.focusStepper(ui.els.roomStepper, focusAfter);
+}
+
+function onRoomSettingsClick(event) {
+  const button = event.target.closest("button[data-step]");
+  if (!button || button.disabled || !ui.canEditRoomTasks(state)) return;
+  saveTasksPerPerson(ui.stepValue(ui.els.roomStepper, Number(button.dataset.step)), button.dataset.step);
+}
+
+function onRoomSettingsChange() {
+  const input = ui.els.roomTasksPerPerson;
+  const check = validateTasksPerPerson(input.value);
+  if (!check.ok) {
+    input.value = String(state.snapshot.room.tasks_per_person);  // back to what the room has
+    ui.announce(check.error);
+    return;
+  }
+  saveTasksPerPerson(check.value);
+}
+
+function openLinksEditor() {
+  if (state.snapshot?.room.host_user_id !== state.me || state.linksEditing) return;
+  state.linksEditing = true;
+  render();
+  ui.openLinksForm(state.snapshot.room.links);
+}
+
+function closeLinksEditor() {
+  if (!state.linksEditing) return;
+  state.linksEditing = false;
+  render();
+  ui.focusLinksEdit();
+}
+
+async function onLinksSubmit(event) {
+  event.preventDefault();
+  if (!state.linksEditing || state.busy === "settings") return;
+  const check = validateLinks(ui.readLinksForm());
+  ui.setLinksErrors({ links: check.errors });
+  if (!check.ok) return;
+  const outcome = await moderatorCall((snap) => backend.updateSettings(snap.room.id, { links: check.value }), "settings");
+  if (outcome.ok) {
+    closeLinksEditor();
+    ui.announce(check.value.length ? "Session links saved." : "Session links removed.");
+  } else if (!outcome.stale) {
+    ui.setLinksErrors({ links: check.errors, message: `Couldn't save the links: ${outcome.error}` });
+  }
 }
 
 // ------------------------------------------------------------------ tasks
@@ -509,15 +750,25 @@ function renderDraft() {
 }
 
 function openEditor(scope, taskId) {
-  if (state.editor) return;
+  if (state.editor || state.testers) return;
   if (scope === "room" && !ui.canEditRoomTasks(state)) return;
+  if (scope === "spin" && !canEditSpin()) return;
   const tasks = currentTasks(scope);
   if (taskId === null && tasks.length >= CONFIG.maxTasks) return;
   const task = taskId === null ? blankTask() : tasks.find((t) => t.id === taskId);
   if (!task) return;
-  state.editor = { scope, taskId };
+  // After the spin the editor also says who tests the task. A new task suggests someone online
+  // with the devices and the fewest tasks.
+  let testers = null;
+  if (scope === "spin") {
+    const assignments = currentSpin()?.assignments ?? [];
+    const entry = taskId === null ? null : assignments.find((a) => a.task_id === taskId);
+    const selected = entry ? ownerIds(entry) : [suggestOwner(task, state.snapshot.participants, assignments, isOnlineNow)].filter(Boolean);
+    testers = { participants: state.snapshot.participants, selected, isOnline: isOnlineNow };
+  }
+  state.editor = { scope, taskId, opened: testers?.selected ?? [] };
   editorOpener = document.activeElement;
-  ui.openTaskEditor({ task, isNew: taskId === null });
+  ui.openTaskEditor({ task, isNew: taskId === null, testers });
 }
 
 function closeEditor(returnTo = null) {
@@ -538,7 +789,9 @@ function onEditorClosed() {
   const current = document.activeElement;
   const untouched = !current || current === document.body || current === editorOpener || ui.els.taskDialog.contains(current);
   editorOpener = null;
-  if (target && untouched) ui.focusTask(target.scope, target.taskId);
+  if (!target || !untouched) return;
+  if (target.scope === "spin") ui.focusRowControl(target.taskId, "edit-task");
+  else ui.focusTask(target.scope, target.taskId);
 }
 
 /** Save a new task list for the room. Resolves to { ok } or { ok: false, error, stale }. */
@@ -596,6 +849,25 @@ async function onTaskFormSubmit(event) {
     return;
   }
 
+  if (editor.scope === "spin") {
+    // After the spin: the task and its testers in one call (the database checks the devices)
+    const current = editing ? ownerIds(currentSpin()?.assignments.find((a) => a.task_id === id)) : [];
+    // A new task: exactly who is checked. An existing one: only what changed, applied to the testers now.
+    const chosen = ui.readTaskForm().owners;
+    const ordered = editing ? applyTesterChanges(current, editor.opened ?? [], chosen) : chosen;
+    ui.setTaskFormBusy(true, "Saving…");
+    const outcome = await moderatorCall((snap) => backend.saveTask(snap.room.id, snap.room.spins_used, task, ordered, !editing), "moderator", id);
+    if (state.editor !== editor) return;
+    ui.setTaskFormBusy(false);
+    if (outcome.ok) {
+      closeEditor({ scope: "spin", taskId: id });
+      ui.announce([editing ? "Task saved." : ordered.length ? `Task added and given to ${namesOf(ordered)}.` : "Task added. Nobody tests it yet.", ...outcome.others].join(" "));
+    } else if (!outcome.stale) {
+      ui.setTaskFormError(`Couldn't save the task: ${outcome.error}`);
+    }
+    return;
+  }
+
   ui.setTaskFormBusy(true, "Saving…");
   const outcome = await saveRoomTasks(next);
   if (state.editor !== editor) return;  // closed meanwhile: the room locked or we left it
@@ -622,6 +894,18 @@ async function deleteTask(scope, taskId) {
     renderDraft();
     ui.focusTask("draft", neighbour);
     ui.announce(message);
+    return;
+  }
+  if (scope === "spin") {
+    const rowNeighbour = ui.adjacentRowTaskId(taskId);
+    const outcome = await moderatorCall((snap) => backend.deleteTask(snap.room.id, snap.room.spins_used, taskId), "moderator", taskId);
+    if (outcome.ok) {
+      ui.focusRowControl(rowNeighbour, "edit-task");
+      ui.announce([message, ...outcome.others].join(" "));
+    } else if (!outcome.stale) {
+      state.alert = `Couldn't delete the task: ${outcome.error}`;
+      render();
+    }
     return;
   }
   const outcome = await saveRoomTasks(next);
@@ -713,7 +997,6 @@ async function onCopyLink() {
 
 // ------------------------------------------------------------------ wiring
 
-ui.renderSessionLinks(CONFIG.sessionLinks);
 ui.els.form.addEventListener("submit", onFormSubmit);
 ui.els.spinBtn.addEventListener("click", onSpin);
 ui.els.respinBtn.addEventListener("click", onSpin);
@@ -745,6 +1028,26 @@ ui.els.taskForm.addEventListener("change", () => ui.syncTaskForm());
 ui.els.taskCancel.addEventListener("click", () => closeEditor());
 ui.els.taskDialog.addEventListener("cancel", (event) => { if (ui.taskEditorBusy()) event.preventDefault(); });
 ui.els.taskDialog.addEventListener("close", onEditorClosed);
+ui.els.testersForm.addEventListener("submit", onTestersSubmit);
+ui.els.testersCancel.addEventListener("click", () => closeTesters());
+ui.els.testersDialog.addEventListener("cancel", (event) => { if (ui.testersBusy()) event.preventDefault(); });
+ui.els.testersDialog.addEventListener("close", onTestersClosed);
+ui.els.formSettings.addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-step]");
+  if (button && !button.disabled) ui.stepValue(button.closest("[data-stepper]"), Number(button.dataset.step));
+});
+ui.els.roomSettings.addEventListener("click", onRoomSettingsClick);
+ui.els.roomTasksPerPerson.addEventListener("change", onRoomSettingsChange);
+ui.els.linksEdit.addEventListener("click", openLinksEditor);
+for (const container of [ui.els.formLinks, ui.els.roomLinks]) {
+  container.addEventListener("click", (event) => {
+    const add = event.target.closest("[data-link-add]");
+    if (add && !add.disabled && ui.addLinkRow(container)) ui.announce("Link added. Fill in the label and the address.");
+  });
+}
+ui.els.linksCancel.addEventListener("click", closeLinksEditor);
+ui.els.linksForm.addEventListener("submit", onLinksSubmit);
+ui.els.linksForm.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); closeLinksEditor(); } });
 
 window.addEventListener("popstate", route);
 window.addEventListener("offline", () => { if (subscription) onConnection("reconnecting", "Your device is offline."); });

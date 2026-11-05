@@ -50,6 +50,8 @@
       </div>
 
       <form id="profile-form" class="form" novalidate>
+        <!-- On a wide screen the create form has two columns: you on the left, the room on the right -->
+        <div class="form-col form-col-you">
         <div class="field">
           <div class="text-field">
             <input id="name" name="name" type="text" placeholder=" " autocomplete="nickname" maxlength="40" required aria-describedby="name-error">
@@ -95,6 +97,9 @@
           </div>
           <p id="devices-hint" class="footnote">Everyone tests on Desktop. Turn on the others you have.</p>
         </fieldset>
+        </div>
+
+        <div id="form-col-room" class="form-col form-col-room" hidden>
 
         <!-- Create mode only: the task list the new room starts with -->
         <section id="form-tasks" class="field form-tasks" aria-labelledby="form-tasks-label" hidden>
@@ -122,6 +127,32 @@
           </div>
         </section>
 
+        <!-- Create mode only: room settings (the moderator can change them in the lobby too) -->
+        <section id="form-settings" class="field form-settings" aria-labelledby="form-settings-label" hidden>
+          <h2 id="form-settings-label" class="field-label">Room settings</h2>
+          <div class="group">
+            <div class="group-row stepper-row">
+              <label for="tasks-per-person" id="tasks-per-person-label">Tasks per person</label>
+              <div class="stepper" data-stepper>
+                <button type="button" class="stepper-btn" data-step="-1" aria-label="Fewer tasks per person">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 8h9"/></svg>
+                </button>
+                <input id="tasks-per-person" name="tasks_per_person" type="number" inputmode="numeric" min="1" max="10" step="1" value="1" aria-describedby="tasks-per-person-hint tasks-per-person-error">
+                <button type="button" class="stepper-btn" data-step="1" aria-label="More tasks per person">
+                  <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <p id="tasks-per-person-hint" class="footnote settings-note">Everyone online gets at least this many tasks. When that needs more places than there are tasks, a task gets several testers.</p>
+          <p id="tasks-per-person-error" class="field-error" hidden></p>
+
+          <h2 id="form-links-label" class="field-label links-label">Session links</h2>
+          <div id="form-links" class="group links-editor" role="group" aria-labelledby="form-links-label"></div>
+          <p class="footnote settings-note">Shown at the top of the room for everyone, up to 4. They start as the default links; change, clear or add more.</p>
+        </section>
+        </div>
+
         <p id="form-error" class="notice notice-error" role="alert" hidden></p>
         <button type="submit" id="form-submit" class="btn btn-primary btn-block">Create room</button>
       </form>
@@ -132,9 +163,21 @@
       <h1 id="room-heading" class="sr-only">Room</h1>
 
       <!-- Links the team uses in every session (SESSION_LINK_1 / SESSION_LINK_2 in .env) -->
-      <nav id="session-links" class="group session-links" aria-label="Session links" hidden>
-        <span class="session-links-label">Links for this session</span>
-        <ul id="session-links-list" class="session-links-list"></ul>
+      <nav id="session-links" class="group session-links" aria-labelledby="session-links-label" hidden>
+        <div class="session-links-bar">
+          <span id="session-links-label" class="session-links-label">Links for this session</span>
+          <ul id="session-links-list" class="session-links-list"></ul>
+          <button type="button" id="links-edit" class="btn btn-plain btn-small links-edit" aria-expanded="false" aria-controls="links-form" hidden>Edit links</button>
+        </div>
+        <!-- Moderator only: change the two links -->
+        <form id="links-form" class="links-form" novalidate hidden>
+          <div id="room-links" class="links-editor links-editor-inline" role="group" aria-label="Session links"></div>
+          <p id="links-error" class="notice notice-error" role="alert" hidden></p>
+          <div class="links-form-actions">
+            <button type="button" id="links-cancel" class="btn btn-tinted btn-small">Cancel</button>
+            <button type="submit" id="links-save" class="btn btn-primary btn-small">Save links</button>
+          </div>
+        </form>
       </nav>
 
       <div class="room-grid">
@@ -163,8 +206,10 @@
                   <h2 id="result-title" class="large-title" tabindex="-1">Result</h2>
                   <p id="my-count" class="my-count"></p>
                   <p id="result-hint" class="footnote result-hint" hidden></p>
+                  <p id="result-settings" class="footnote result-settings" hidden></p>
                 </div>
                 <div class="toggles">
+                  <button type="button" id="result-add" class="btn btn-tinted btn-small" data-action="add-task" hidden>Add task</button>
                   <label class="inline-switch">
                     <input type="checkbox" id="mine-only" role="switch">
                     <span class="switch" aria-hidden="true"></span>
@@ -196,9 +241,7 @@
                       <th role="columnheader" scope="col">Devices</th>
                       <th role="columnheader" scope="col">Browsers</th>
                       <th role="columnheader" scope="col">Task team</th>
-                      <th role="columnheader" scope="col">Assigned to</th>
-                      <th role="columnheader" scope="col">Their team</th>
-                      <th role="columnheader" scope="col">Team match</th>
+                      <th role="columnheader" scope="col">Testers</th>
                     </tr>
                   </thead>
                   <tbody id="result-body" role="rowgroup"></tbody>
@@ -215,6 +258,23 @@
               <p id="room-tasks-summary" class="footnote"></p>
             </div>
             <p id="room-tasks-hint" class="footnote room-tasks-hint"></p>
+            <!-- Tasks per person: the moderator changes it here until the spin, everyone sees it -->
+            <div id="room-settings" class="group room-settings">
+              <div class="group-row stepper-row">
+                <label for="room-tasks-per-person" id="room-tasks-per-person-label">Tasks per person</label>
+                <div class="stepper" data-stepper id="room-stepper">
+                  <button type="button" class="stepper-btn" data-step="-1" aria-label="Fewer tasks per person">
+                    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 8h9"/></svg>
+                  </button>
+                  <input id="room-tasks-per-person" type="number" inputmode="numeric" min="1" max="10" step="1" value="1" aria-describedby="room-settings-hint">
+                  <button type="button" class="stepper-btn" data-step="1" aria-label="More tasks per person">
+                    <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
+                  </button>
+                </div>
+                <span id="room-tasks-per-person-value" class="stepper-value" hidden></span>
+              </div>
+            </div>
+            <p id="room-settings-hint" class="footnote room-tasks-hint"></p>
             <div id="room-task-tools" class="task-tools" hidden>
               <button type="button" class="btn btn-tinted btn-small" data-action="add">Add task</button>
               <button type="button" class="btn btn-plain btn-small btn-confirmable" data-action="reset">
@@ -302,6 +362,14 @@
           <p id="task-browsers-hint" class="footnote">For Desktop. Mac is always tested in Safari.</p>
         </fieldset>
 
+        <!-- After the spin only: who tests the task (moderator) -->
+        <fieldset id="task-testers" class="field" aria-labelledby="task-testers-label" aria-describedby="task-testers-hint" hidden>
+          <legend id="task-testers-label">Testers</legend>
+          <div id="task-testers-chips" class="chips"></div>
+          <p id="task-testers-hint" class="footnote">Only people with the devices this task needs can be picked. Leave everyone out to keep it unassigned.</p>
+          <p id="task-testers-note" class="footnote testers-note" role="status" hidden></p>
+        </fieldset>
+
         <fieldset class="field" aria-labelledby="task-users-label">
           <legend class="legend-row">
             <span id="task-users-label">User levels</span>
@@ -317,6 +385,28 @@
       <div class="sheet-actions">
         <button type="button" id="task-cancel" class="btn btn-tinted">Cancel</button>
         <button type="submit" id="task-save" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Who tests a task, after the spin (moderator) -->
+  <dialog id="testers-dialog" class="sheet sheet-small" aria-labelledby="testers-title" aria-describedby="testers-task">
+    <form id="testers-form" class="sheet-form" novalidate>
+      <div class="sheet-body">
+        <div>
+          <h2 id="testers-title" class="title-3">Change testers</h2>
+          <p id="testers-task" class="footnote testers-task"></p>
+        </div>
+        <fieldset class="field" aria-labelledby="testers-legend" aria-describedby="testers-hint">
+          <legend id="testers-legend">Who tests this task</legend>
+          <div id="testers-chips" class="chips"></div>
+          <p id="testers-hint" class="footnote">Only people with the devices this task needs can be picked. Leave everyone out to keep it unassigned.</p>
+        </fieldset>
+        <p id="testers-error" class="notice notice-error" role="alert" hidden></p>
+      </div>
+      <div class="sheet-actions">
+        <button type="button" id="testers-cancel" class="btn btn-tinted">Cancel</button>
+        <button type="submit" id="testers-save" class="btn btn-primary">Save</button>
       </div>
     </form>
   </dialog>

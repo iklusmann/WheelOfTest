@@ -58,7 +58,18 @@ export const CONFIG = {
 
   // How many takeover requests one person may have waiting at once. Keep equal to
   // public.wot_max_pending_requests() in supabase/schema.sql.
-  maxPendingRequests: 5
+  maxPendingRequests: 5,
+
+  // The most "tasks per person" a room can ask for. Keep equal to public.wot_max_tasks_per_person().
+  maxTasksPerPerson: 10,
+
+  // How many testers a task can have when people add themselves with "Assign me". Keep equal to
+  // public.wot_max_testers_to_join(). The moderator's own changes are not limited.
+  maxTestersToJoin: 2,
+
+  // Session links per room (2 rows to start with, Add link up to this many). Keep equal to the
+  // limit in public._wot_clean_links().
+  maxLinks: 4
 };
 
 export function isConfigured() {

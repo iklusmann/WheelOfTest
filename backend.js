@@ -71,16 +71,24 @@ async function rpc(fn, args) {
   return result.data;
 }
 
-export const createRoom = (profile, tasks) => rpc("create_room", { p_profile: profile, p_tasks: tasks });
+export const createRoom = (profile, tasks, settings = {}) => rpc("create_room", { p_profile: profile, p_tasks: tasks, p_settings: settings ?? {} });
 export const joinRoom = (code, profile) => rpc("join_room", { p_code: code, p_profile: profile });
 export const getRoom = (code) => rpc("get_room", { p_code: code });
 export const commitSpin = (roomId, spinNumber, assignments) =>
   rpc("commit_spin", { p_room_id: roomId, p_spin_number: spinNumber, p_assignments: assignments });
 export const complain = (roomId) => rpc("complain", { p_room_id: roomId });
 export const updateTasks = (roomId, tasks) => rpc("update_tasks", { p_room_id: roomId, p_tasks: tasks });
-export const requestTakeover = (roomId, taskId) => rpc("request_takeover", { p_room_id: roomId, p_task_id: taskId });
+export const requestTakeover = (roomId, taskId, fromUserId = null) =>
+  rpc("request_takeover", { p_room_id: roomId, p_task_id: taskId, p_from_user_id: fromUserId });
 export const resolveTakeover = (requestId, approve) => rpc("resolve_takeover", { p_request_id: requestId, p_approve: approve });
 export const withdrawTakeover = (requestId) => rpc("withdraw_takeover", { p_request_id: requestId });
+export const updateSettings = (roomId, settings) => rpc("update_settings", { p_room_id: roomId, p_settings: settings });
+export const saveTask = (roomId, spinNumber, task, ownerIds, isNew) =>
+  rpc("save_task", { p_room_id: roomId, p_spin_number: spinNumber, p_task: task, p_owner_ids: ownerIds, p_is_new: isNew });
+export const joinTask = (roomId, spinNumber, taskId) => rpc("join_task", { p_room_id: roomId, p_spin_number: spinNumber, p_task_id: taskId });
+export const leaveTask = (roomId, spinNumber, taskId) => rpc("leave_task", { p_room_id: roomId, p_spin_number: spinNumber, p_task_id: taskId });
+export const deleteTask = (roomId, spinNumber, taskId) =>
+  rpc("delete_task", { p_room_id: roomId, p_spin_number: spinNumber, p_task_id: taskId });
 
 // ------------------------------------------------------------------ realtime
 

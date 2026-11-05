@@ -251,6 +251,22 @@ main { max-width: 1320px; margin: 0 auto; padding: 36px var(--gutter) 88px; }
 /* ------------------------------------------------------------------ form */
 
 .form { display: grid; gap: 28px; }
+.form-col { display: grid; gap: 28px; align-content: start; min-width: 0; }
+
+/* Wide screens: the create form in two columns, you on the left and the room on the right,
+   so every setting is visible at once. Create room spans both. */
+@media (min-width: 960px) {
+  .view-form.is-create { max-width: 980px; margin-top: 0; gap: 24px; }
+  /* a compact intro, so the whole form and its button fit on one screen */
+  .view-form.is-create .intro { gap: 4px; }
+  .view-form.is-create .intro .app-icon-large { width: 52px; height: 52px; margin-bottom: 4px; }
+  .view-form.is-create .intro .large-title { font-size: 30px; }
+  .view-form.is-create .intro p { max-width: none; font-size: 17px; }
+  .view-form.is-create .form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 48px; align-items: start; }
+  .view-form.is-create .form > #form-error,
+  .view-form.is-create .form > #form-submit { grid-column: 1 / -1; }
+  .view-form.is-create .form > #form-submit { justify-self: center; max-width: 440px; }
+}
 .field { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .field > legend { padding: 0 4px; margin-bottom: 8px; font-size: 13px; color: var(--label-2); }
 
@@ -360,7 +376,12 @@ input:disabled + .switch { opacity: 0.5; }
 /* ------------------------------------------------------------------ room */
 
 /* session links: the URLs the team uses in every test session, above everything else in the room */
-.session-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px; margin-bottom: 24px; }
+.session-links { display: grid; gap: 12px; padding: 10px 16px; margin-bottom: 24px; }
+.session-links-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.session-links.is-empty .session-links-label { color: var(--label-3); }
+.links-edit { margin-left: auto; }
+.links-form { display: grid; gap: 12px; padding-top: 4px; border-top: 1px solid var(--separator); }
+.links-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .session-links-label { font-size: 13px; color: var(--label-2); }
 .session-links-list { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
 .session-link .icon { width: 14px; height: 14px; }
@@ -454,8 +475,44 @@ input:disabled + .switch { opacity: 0.5; }
 
 /* takeovers: the "Assigned to" cell carries who had the task before, and the controls to ask for it */
 .result-hint { margin-top: 4px; max-width: 60ch; }
-.assignee-box { display: grid; gap: 3px; justify-items: start; }
+.assignee-box { display: grid; gap: 6px; justify-items: start; }
 .handover { font-size: 13px; color: var(--label-2); }
+
+/* testers of a task: one line each (name, team, match), then how they got it and the request controls */
+.owners { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.owner { display: grid; gap: 3px; justify-items: start; }
+.owner + .owner { padding-top: 8px; border-top: 1px dashed var(--separator); }
+.owner-top { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; }
+.owner .match { font-size: 13px; }
+.owner .match .icon { width: 15px; height: 15px; }
+.unassigned-box { display: grid; gap: 1px; }
+
+/* Assign me: the main way to get a task. A solid pill with an icon, so nobody mistakes it for a link. */
+.join-btn {
+  min-height: 34px; padding: 0 15px 0 11px; gap: 6px;
+  background: var(--accent); color: var(--on-accent); font-weight: 600;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.join-btn .icon { width: 17px; height: 17px; stroke-width: 2.2; }
+.join-btn:hover:not(:disabled) { background: var(--accent-hover); }
+/* Take over: secondary, asks for someone's place. An outlined pill. */
+.takeover-btn {
+  min-height: 30px; padding: 0 12px 0 9px; gap: 5px; font-size: 14px;
+  background: transparent; color: var(--accent-text); font-weight: 600;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent-text) 45%, transparent);
+}
+.takeover-btn .icon { width: 15px; height: 15px; }
+.takeover-btn:hover:not(:disabled) { background: var(--accent-fill); }
+.takeover-btn:disabled, .join-btn:disabled { box-shadow: none; }
+.result-hint b { font-weight: 600; color: var(--label); }
+
+/* the moderator's tools in the table */
+.testers-btn { margin-left: -12px; gap: 6px; }
+.testers-btn .icon { width: 17px; height: 17px; }
+.row-tools { display: inline-flex; gap: 0; margin-left: -10px; }
+.row-tools .icon-btn { min-width: 34px; height: 34px; }
+.row-tools .icon-btn .icon { width: 18px; height: 18px; }
+.result-settings { margin-top: 2px; }
 .takeover-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .takeover-note { width: 100%; }
 .btn-inline { min-height: 30px; padding: 0 12px; margin-left: -12px; font-size: 14px; }
@@ -585,7 +642,8 @@ input:disabled + .switch { opacity: 0.5; }
 .room-tasks-hint { padding: 0 4px; margin-top: -4px; }
 
 /* result table: user levels under the task name */
-.task-what-box { display: grid; gap: 1px; max-width: 15em; } /* long names wrap instead of squeezing other columns */
+.task-what-box { display: grid; gap: 4px; max-width: 15em; justify-items: start; } /* long names wrap instead of squeezing other columns */
+.task-what-text { display: grid; gap: 1px; }
 .task-users { font-size: 13px; color: var(--label-2); font-weight: 400; }
 
 /* ------------------------------------------------------------------ chips */
@@ -593,7 +651,7 @@ input:disabled + .switch { opacity: 0.5; }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .chip { position: relative; display: inline-flex; cursor: pointer; }
 .chip input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.chip span {
+.chip > span {
   display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 15px;
   border-radius: 999px; background: var(--surface); box-shadow: inset 0 0 0 1px var(--separator);
   color: var(--label); font-size: 15px; font-weight: 500; letter-spacing: -0.01em;
@@ -678,7 +736,7 @@ input:disabled + .switch { opacity: 0.5; }
   .result-table .c-what::before { content: none; }
   .result-table .c-what .task-what { font-size: 17px; white-space: normal; }
   .result-table .task-what-box { max-width: none; }
-  .result-table td:not(.c-what):not(.c-assignee):not(.c-match) { color: var(--label); }
+  .result-table td:not(.c-what):not(.c-assignee) { color: var(--label); }
   .match { white-space: normal; }
 }
 
@@ -720,4 +778,66 @@ input:disabled + .switch { opacity: 0.5; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+/* ------------------------------------------------------------------ settings */
+
+.form-settings { gap: 8px; }
+.settings-note { padding: 0 4px; }
+.links-label { margin-top: 14px; }
+.stepper-row { min-height: 54px; }
+.stepper-row label { font-size: 17px; }
+.stepper { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--fill); }
+.stepper[hidden] { display: none; }
+.stepper input {
+  width: 44px; height: 32px; padding: 0; border: 0; background: transparent; color: var(--label);
+  font: inherit; font-size: 17px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield; appearance: textfield;
+}
+.stepper input::-webkit-outer-spin-button, .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper input:disabled { color: var(--label-2); }
+.stepper-btn {
+  display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  background: var(--surface); color: var(--accent-text); cursor: pointer; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+.stepper-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.stepper-btn:disabled { color: var(--label-3); cursor: default; box-shadow: none; background: transparent; }
+.stepper-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.room-settings { margin-top: 2px; }
+
+/* two link rows: label + address */
+.links-editor .link-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 10px; align-items: start; padding: 12px 16px; }
+.links-editor-inline .link-row { padding: 0; }
+.links-editor-inline { display: grid; gap: 10px; }
+.link-field { display: grid; gap: 4px; min-width: 0; }
+.link-field-label { font-size: 13px; color: var(--label-2); }
+.input {
+  width: 100%; height: 40px; padding: 0 12px; min-width: 0;
+  background: var(--surface); color: var(--label); border: 1px solid var(--border); border-radius: 10px;
+  font: inherit; font-size: 16px;
+}
+.input::placeholder { color: var(--label-3); }
+.input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 0 4px var(--focus-ring); }
+.input[aria-invalid="true"] { border-color: var(--red); }
+.link-field .field-error { padding: 0; }
+.links-add-row { min-height: 0; padding-top: 6px; padding-bottom: 8px; }
+.links-editor-inline .links-add-row { padding: 0; }
+.links-add { margin-left: -14px; gap: 6px; }
+.links-add .icon { width: 16px; height: 16px; }
+
+/* people as chips (who tests a task) */
+.chip-person span { gap: 7px; }
+.chip-person .team-badge { font-size: 11px; line-height: 16px; }
+.chip-person input:checked + span .team-badge { background: rgba(255, 255, 255, 0.22); color: inherit; }
+.chip-state { font-size: 12px; font-weight: 500; color: var(--label-2); }
+.chip-state:empty { display: none; }
+.chip-person input:checked + span .chip-state { color: inherit; opacity: 0.85; }
+.chip-person.is-offline .chip-name { opacity: 0.75; }
+.testers-note { color: var(--orange); }
+.testers-task { margin-top: 4px; }
+.sheet-small { width: min(480px, calc(100% - 32px)); }
+
+@media (max-width: 560px) {
+  .links-editor .link-row { grid-template-columns: minmax(0, 1fr); }
+  .links-edit { margin-left: 0; }
 }
