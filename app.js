@@ -34,7 +34,8 @@ const state = {
   draftOpen: false,            // create form: task list expanded
   editor: null,                // open task editor: { scope: "draft" | "room" | "spin", taskId: string | null }
   testers: null,               // open testers dialog: { taskId }
-  linksEditing: false          // the moderator's links form is open
+  linksEditing: false,         // the moderator's links form is open
+  lobbyTasksOpen: false        // a participant opened the lobby's task list
 };
 
 let subscription = null;
@@ -1039,6 +1040,7 @@ ui.els.formSettings.addEventListener("click", (event) => {
 ui.els.roomSettings.addEventListener("click", onRoomSettingsClick);
 ui.els.roomTasksPerPerson.addEventListener("change", onRoomSettingsChange);
 ui.els.linksEdit.addEventListener("click", openLinksEditor);
+ui.els.roomTasksToggle.addEventListener("click", () => { state.lobbyTasksOpen = !state.lobbyTasksOpen; render(); });
 for (const container of [ui.els.formLinks, ui.els.roomLinks]) {
   container.addEventListener("click", (event) => {
     const add = event.target.closest("[data-link-add]");

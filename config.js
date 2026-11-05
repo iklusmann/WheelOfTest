@@ -34,11 +34,6 @@ function sessionLink(name, raw) {
   return { label: label || parsed.hostname, url: parsed.href };
 }
 
-const DEFAULT_SESSION_LINKS = [
-  "QA Testing Template and instructions | https://docs.e3dc.com/spaces/CLOUD/pages/220588941/QA+Testing",
-  "Release Changelog | https://docs.e3dc.com/spaces/CLOUD/pages/98239113/Changelog"
-];
-
 export const CONFIG = {
   supabaseUrl: ENV.SUPABASE_URL || "",
   supabasePublishableKey: ENV.SUPABASE_PUBLISHABLE_KEY || "",
@@ -47,11 +42,8 @@ export const CONFIG = {
   nameMaxLength: 40,
 
   // Links the team uses in every test session (e.g. the test environment and the test cases).
-  // Shown at the top of the room. SESSION_LINK_1 and SESSION_LINK_2 in .env override these defaults.
-  sessionLinks: [
-    ["SESSION_LINK_1", ENV.SESSION_LINK_1 || DEFAULT_SESSION_LINKS[0]],
-    ["SESSION_LINK_2", ENV.SESSION_LINK_2 || DEFAULT_SESSION_LINKS[1]]
-  ]
+  // Shown at the top of the room. Set SESSION_LINK_1 and SESSION_LINK_2 in .env.
+  sessionLinks: [["SESSION_LINK_1", ENV.SESSION_LINK_1], ["SESSION_LINK_2", ENV.SESSION_LINK_2]]
     .map(([name, raw]) => sessionLink(name, raw))
     .filter(Boolean),
 

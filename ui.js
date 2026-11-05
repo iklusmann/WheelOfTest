@@ -40,7 +40,7 @@ export const els = {
   peopleSummary: $("people-summary"), peopleList: $("people-list"),
   formTasks: $("form-tasks"), formTasksSummary: $("form-tasks-summary"), formTasksToggle: $("form-tasks-toggle"),
   formTasksBody: $("form-tasks-body"), formTaskTools: $("form-task-tools"), formTaskList: $("form-task-list"),
-  roomTasks: $("room-tasks"), roomTasksSummary: $("room-tasks-summary"), roomTasksHint: $("room-tasks-hint"),
+  roomTasks: $("room-tasks"), roomTasksSummary: $("room-tasks-summary"), roomTasksHint: $("room-tasks-hint"), roomTasksToggle: $("room-tasks-toggle"),
   roomTaskTools: $("room-task-tools"), roomTaskList: $("room-task-list"),
   taskDialog: $("task-dialog"), taskForm: $("task-form"), taskDialogTitle: $("task-dialog-title"),
   taskWhat: $("task-what"), taskWhatError: $("task-what-error"),
@@ -408,22 +408,21 @@ function iconButton(iconName, label, action, taskId) {
   return button;
 }
 
+/** One task in a list under its group header: just the device and browsers, plus Edit / Delete. */
 function taskRow(t, { editable, busy, lastOne }) {
   const li = el("li", "task-row");
   li.dataset.taskId = t.id;
 
   const main = el("div", "task-main");
-  const title = el("div", "task-title");
-  title.append(el("span", "task-name", t.what), themeTag(t.theme));
-
-  const meta = el("div", "task-meta");
-  if (t.devices.includes("desktop")) meta.append(metaItem("desktop", "Desktop"));
-  if (t.devices.includes("mac")) meta.append(metaItem("laptop", "Mac"));
-  const phones = t.devices.filter((d) => PHONE_VALUES.includes(d));
-  if (phones.length) meta.append(metaItem("phone", labelsIn(DEVICES, phones).join(", ")));
-  if (taskBrowsers(t).length) meta.append(metaItem("globe", browsersText(t)));
-  if (t.users.length) meta.append(metaItem("person", labelsIn(USER_LEVELS, t.users).join(", ")));
-  main.append(title, meta);
+  const devices = el("div", "task-devices");
+  devices.append(el("span", "sr-only", `${t.what}, ${labelIn(THEMES, t.theme)}: `));
+  for (const d of t.devices) {
+    const item = el("span", "device-name");
+    item.append(icon({ desktop: "desktop", mac: "laptop", android: "phone", ios: "phone" }[d] ?? "desktop", "icon icon-stroke"), document.createTextNode(labelIn(DEVICES, d)));
+    devices.append(item);
+  }
+  main.append(devices);
+  if (taskBrowsers(t).length) main.append(el("span", "device-browsers", browsersText(t, " · ")));
   li.append(main);
 
   if (editable) {
@@ -434,7 +433,8 @@ function taskRow(t, { editable, busy, lastOne }) {
     del.append(el("span", "when-armed", "Delete"));
     edit.disabled = busy;
     del.disabled = busy || lastOne;
-    if (lastOne) del.title = "A room needs at least one task.";
+    edit.title = "Edit task";
+    del.title = lastOne ? "A room needs at least one task." : "Delete task";
     const actions = el("div", "task-actions");
     actions.append(edit, del);
     li.append(actions);
@@ -445,7 +445,8 @@ function taskRow(t, { editable, busy, lastOne }) {
 const listKeys = new WeakMap();
 
 /**
- * Render tasks grouped by team ("All teams" first, then the configured teams).
+ * Render tasks grouped like the result table: one header per run of tasks that share name, theme,
+ * team and user levels (in the defaults, a release in one theme), then one row per device.
  * Keyed, so presence updates don't rebuild the list (and don't drop an armed Delete).
  */
 function renderTaskList(container, tasks, { editable, busy }) {
@@ -453,29 +454,32 @@ function renderTaskList(container, tasks, { editable, busy }) {
   if (listKeys.get(container) === key) return;
   listKeys.set(container, key);
 
-  const groups = [{ team: null, label: "All teams" }, ...CONFIG.teams.map((team) => ({ team, label: team }))];
+  const groups = [];
   for (const t of tasks) {
-    if (t.team !== null && !groups.some((g) => g.team === t.team)) groups.push({ team: t.team, label: t.team });
+    const k = JSON.stringify([t.what, t.theme, t.team, t.users]);
+    const last = groups[groups.length - 1];
+    if (last && last.key === k) last.items.push(t);
+    else groups.push({ key: k, items: [t] });
   }
-  const sections = [];
-  for (const group of groups) {
-    const items = tasks.filter((t) => t.team === group.team);
-    if (items.length === 0) continue;
+  const sections = groups.map(({ items }) => {
+    const t = items[0];
     const section = el("section", "task-group");
     const head = el("h3", "task-group-title");
-    if (group.team === null) head.append(el("span", "task-group-name", group.label));
-    else {
-      const badge = el("span", "team-badge", group.label);
-      badge.dataset.team = group.team;
+    head.append(el("span", "task-group-name", t.what), themeTag(t.theme));
+    if (t.team) {
+      const badge = el("span", "team-badge", t.team);
+      badge.dataset.team = t.team;
       head.append(badge);
+    } else {
+      head.append(el("span", "group-any", "All teams"));
     }
-    head.append(el("span", "task-group-count", String(items.length)));
-    head.setAttribute("aria-label", `${group.team === null ? "All teams" : `Team ${group.label}`}, ${plural(items.length, "task")}`);
+    if (t.users.length) head.append(el("span", "group-users", labelsIn(USER_LEVELS, t.users).join(", ")));
+    head.setAttribute("aria-label", `${t.what}, ${labelIn(THEMES, t.theme)}, ${t.team ? `team ${t.team}` : "all teams"}, ${plural(items.length, "task")}`);
     const list = el("ul", "group task-rows");
-    list.append(...items.map((t) => taskRow(t, { editable, busy, lastOne: tasks.length === 1 })));
+    list.append(...items.map((x) => taskRow(x, { editable, busy, lastOne: tasks.length === 1 })));
     section.append(head, list);
-    sections.push(section);
-  }
+    return section;
+  });
   container.replaceChildren(...sections);
 }
 
@@ -954,17 +958,28 @@ function renderRoomTasks(state) {
 
   const isHost = room.host_user_id === state.me;
   const canEdit = canEditRoomTasks(state);
-  els.roomTasksSummary.textContent = tasksSummary(room.tasks);
+  const n = room.tasks_per_person;
+  // The moderator edits the list, so it's always open for them. Everyone else gets a one-line
+  // summary and the list on request, so the room isn't one long scroll.
+  const open = isHost || state.lobbyTasksOpen;
+  els.roomTasksSummary.textContent = isHost ? tasksSummary(room.tasks)
+    : `${plural(room.tasks.length, "task")} · at least ${n} each`;
+  els.roomTasksToggle.hidden = isHost;
+  els.roomTasksToggle.textContent = open ? "Hide tasks" : "Show tasks";
+  els.roomTasksToggle.setAttribute("aria-expanded", String(open));
+  els.roomTasksHint.hidden = !open;
   els.roomTasksHint.textContent = !isHost
-    ? "The moderator can change these until the wheel spins."
+    ? "The moderator can change these until the spin."
     : state.busy === "tasks" ? "Saving the tasks…"
-    : "You can change the tasks until you spin. Everyone in the room sees changes right away.";
+    : "Change them until you spin; everyone sees changes right away.";
   els.roomTaskTools.hidden = !isHost;
+  els.roomTaskList.hidden = !open;
+  els.roomSettings.hidden = !isHost;
+  els.roomSettingsHint.hidden = !isHost;
   if (isHost) renderTaskTools(els.roomTaskTools, room.tasks, !canEdit);
-  renderTaskList(els.roomTaskList, room.tasks, { editable: isHost, busy: !canEdit });
+  if (open) renderTaskList(els.roomTaskList, room.tasks, { editable: isHost, busy: !canEdit });
 
   // Tasks per person: the moderator's stepper, a plain value for everyone else
-  const n = room.tasks_per_person;
   els.roomStepper.hidden = !isHost;
   els.roomTasksPerPersonValue.hidden = isHost;
   els.roomTasksPerPersonValue.textContent = String(n);
@@ -977,8 +992,8 @@ function renderRoomTasks(state) {
   input.disabled = !canEdit;
   syncStepper(els.roomStepper);
   els.roomSettingsHint.textContent = state.busy === "settings" ? "Saving…"
-    : n === 1 ? "Everyone online gets at least one task. If there are more people than tasks, some tasks get two testers."
-    : `Everyone online gets at least ${n} tasks, so tasks get several testers.`;
+    : n === 1 ? "At least one task each. With more people than tasks, some tasks get two testers."
+    : `Everyone gets at least ${n} tasks, so tasks get several testers.`;
 }
 
 function renderConnection(state) {
@@ -1018,15 +1033,16 @@ function renderPeople(state) {
     const badge = el("span", "team-badge", p.team);
     badge.dataset.team = p.team;
     meta.append(badge);
-    // Desktop always, then whichever of Mac / Android / iOS the tester has
+    // Everyone has Desktop, so only the extras are listed
     const devices = el("span", "devices");
-    const owned = [["desktop", "Desktop", true], ["laptop", "Mac", p.mac], ["phone", "Android", p.android], ["phone", "iOS", p.ios]];
+    const owned = [["laptop", "Mac", p.mac], ["phone", "Android", p.android], ["phone", "iOS", p.ios]];
     for (const [iconName, label, has] of owned) {
       if (!has) continue;
       const d = el("span", "device");
       d.append(icon(iconName), document.createTextNode(label));
       devices.append(d);
     }
+    if (!devices.childNodes.length) devices.append(el("span", "device device-none", "Desktop only"));
     meta.append(devices);
     li.append(avatar, top, presence, meta);
     return li;
@@ -1184,8 +1200,8 @@ export function renderResult(state) {
   els.resultHint.hidden = !open;
   els.resultHint.textContent = !open ? ""
     : ctx.atLimit ? `You have ${CONFIG.maxPendingRequests} requests waiting. Withdraw one to ask for another.`
-    : isHost ? `Change testers, edit or add tasks right in the table. Anyone can press Assign me to test a task too (up to ${CONFIG.maxTestersToJoin} testers), or Take over to ask for someone's place; you or that person approves.`
-    : `Want to help? Press Assign me to test a task too (up to ${CONFIG.maxTestersToJoin} testers). To take someone's place, press Take over; they or the moderator approve.`;
+    : isHost ? "Change testers, edit or add tasks in the table. You answer takeover requests above."
+    : `Assign me adds you to a task (up to ${CONFIG.maxTestersToJoin} testers). Take over asks for someone's place.`;
   els.resultSettings.hidden = !(open && snap.room.tasks_per_person > 1);
   els.resultSettings.textContent = `Tasks per person: at least ${snap.room.tasks_per_person}.`;
   els.resultAdd.hidden = !(open && isHost);
