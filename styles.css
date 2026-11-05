@@ -443,14 +443,40 @@ input:disabled + .switch { opacity: 0.5; }
   text-align: left; padding: 14px 10px 10px; border-bottom: 1px solid var(--separator);
   font-size: 13px; font-weight: 500; color: var(--label-2); letter-spacing: -0.006em; white-space: nowrap;
 }
-.result-table td { padding: 12px 10px; vertical-align: middle; color: var(--label-2); }
-.result-table tbody tr + tr td { border-top: 1px solid var(--separator); }
+.result-table td { padding: 10px 12px; vertical-align: top; color: var(--label); }
+.result-table tr.result-row td { border-top: 1px solid var(--separator); }
 .result-table th:first-child, .result-table td:first-child { padding-left: 18px; }
-.result-table .c-what, .result-table .c-assignee { color: var(--label); }
+.result-table th:last-child, .result-table td:last-child { padding-right: 16px; }
+.result-table th.c-device { width: 30%; }
+.result-table th.c-actions { width: 1%; }
+
+/* one header per group of tasks: name, theme, team and user levels said once */
+.result-table tr.group-head th {
+  padding: 18px 16px 8px 18px; text-align: left; white-space: normal;
+  font-size: 15px; font-weight: 400; color: var(--label); letter-spacing: -0.012em; border-bottom: 0;
+}
+.result-table tbody tr.group-head:first-child th { padding-top: 12px; }
+.group-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.group-name { font-size: 16px; font-weight: 600; }
+.group-any { font-size: 12px; font-weight: 600; color: var(--label-2); padding: 0 6px; border-radius: 6px; background: var(--fill); line-height: 18px; }
+.group-users { font-size: 13px; color: var(--label-2); }
+.group-users::before { content: "· "; }
+.group-mine { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--accent-text); }
+
+/* device cell */
+.device-box { display: grid; gap: 1px; }
+.device-names { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; font-weight: 500; }
+.device-name { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.device-name .icon { width: 16px; height: 16px; color: var(--label-2); }
+.device-browsers { font-size: 13px; color: var(--label-2); padding-left: 22px; }
+
+/* actions: one quiet column on the right */
+.row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 4px; white-space: nowrap; }
 .task-what { font-weight: 600; overflow-wrap: anywhere; }
 .result-table td.c-what { min-width: 13em; } /* border-box: keeps "Critical User Flows" on one line */
 
 .result-table tr.is-mine td { background: var(--accent-tint); }
+.result-table tr.result-row:not(.is-mine):hover td { background: color-mix(in srgb, var(--label) 3%, transparent); }
 .result-table tr.is-mine td:first-child { box-shadow: inset 4px 0 0 var(--accent); }
 
 .assignee { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
@@ -476,32 +502,37 @@ input:disabled + .switch { opacity: 0.5; }
 /* takeovers: the "Assigned to" cell carries who had the task before, and the controls to ask for it */
 .result-hint { margin-top: 4px; max-width: 60ch; }
 .assignee-box { display: grid; gap: 6px; justify-items: start; }
-.handover { font-size: 13px; color: var(--label-2); }
+.handover { font-size: 12px; color: var(--label-3); }
 
 /* testers of a task: one line each (name, team, match), then how they got it and the request controls */
-.owners { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.owner { display: grid; gap: 3px; justify-items: start; }
-.owner + .owner { padding-top: 8px; border-top: 1px dashed var(--separator); }
+.owners { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.owner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; min-height: 30px; }
+.owner-info { display: grid; gap: 1px; min-width: 0; }
 .owner-top { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 7px; }
+.owner .takeover-row { margin-left: auto; }
+.cross-team { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; color: var(--orange); }
+.cross-team .team-badge { font-size: 11px; line-height: 16px; }
+.assignee-name { font-weight: 500; }
 .owner .match { font-size: 13px; }
 .owner .match .icon { width: 15px; height: 15px; }
 .unassigned-box { display: grid; gap: 1px; }
+.unassigned-box .reason { font-size: 12px; }
 
-/* Assign me: the main way to get a task. A solid pill with an icon, so nobody mistakes it for a link. */
+/* Assign me: the main way to get a task. A tinted pill with an icon (solid on hover), calm enough
+   to repeat down a long table. */
 .join-btn {
-  min-height: 34px; padding: 0 15px 0 11px; gap: 6px;
-  background: var(--accent); color: var(--on-accent); font-weight: 600;
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent) 30%, transparent);
+  min-height: 32px; padding: 0 13px 0 10px; gap: 5px; font-size: 14px;
+  background: var(--accent-fill); color: var(--accent-text); font-weight: 600;
 }
-.join-btn .icon { width: 17px; height: 17px; stroke-width: 2.2; }
-.join-btn:hover:not(:disabled) { background: var(--accent-hover); }
-/* Take over: secondary, asks for someone's place. An outlined pill. */
+.join-btn .icon { width: 16px; height: 16px; stroke-width: 2.2; }
+.join-btn:hover:not(:disabled), .result-row:hover .join-btn:not(:disabled) { background: var(--accent); color: var(--on-accent); }
+/* Take over: secondary, asks for someone's place. A slim outlined pill next to that person. */
 .takeover-btn {
-  min-height: 30px; padding: 0 12px 0 9px; gap: 5px; font-size: 14px;
+  min-height: 28px; padding: 0 10px 0 8px; gap: 4px; font-size: 13px;
   background: transparent; color: var(--accent-text); font-weight: 600;
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent-text) 45%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-text) 40%, transparent);
 }
-.takeover-btn .icon { width: 15px; height: 15px; }
+.takeover-btn .icon { width: 14px; height: 14px; }
 .takeover-btn:hover:not(:disabled) { background: var(--accent-fill); }
 .takeover-btn:disabled, .join-btn:disabled { box-shadow: none; }
 .result-hint b { font-weight: 600; color: var(--label); }
@@ -509,9 +540,17 @@ input:disabled + .switch { opacity: 0.5; }
 /* the moderator's tools in the table */
 .testers-btn { margin-left: -12px; gap: 6px; }
 .testers-btn .icon { width: 17px; height: 17px; }
-.row-tools { display: inline-flex; gap: 0; margin-left: -10px; }
-.row-tools .icon-btn { min-width: 34px; height: 34px; }
-.row-tools .icon-btn .icon { width: 18px; height: 18px; }
+.row-tools { display: inline-flex; gap: 0; }
+.row-tools .icon-btn { min-width: 32px; height: 32px; color: var(--label-2); }
+.row-tools .icon-btn:hover:not(:disabled) { color: var(--accent-text); }
+.row-tools .icon-btn-danger:hover:not(:disabled) { color: var(--red); }
+.row-tools .icon-btn .icon { width: 17px; height: 17px; }
+.owner-info .takeover-note { width: auto; font-size: 12px; color: var(--orange); }
+/* With a mouse, the moderator's row tools stay dim until the row is hovered or focused */
+@media (hover: hover) {
+  .row-tools { opacity: 0.45; transition: opacity 0.15s ease; }
+  .result-row:hover .row-tools, .row-tools:focus-within { opacity: 1; }
+}
 .result-settings { margin-top: 2px; }
 .takeover-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .takeover-note { width: 100%; }
@@ -716,37 +755,20 @@ input:disabled + .switch { opacity: 0.5; }
   .people { position: static; }
 }
 
-/* Table → list cells when the result area is too narrow for 8 columns. A container query,
-   so the two-column desktop layout is covered too. Explicit ARIA roles keep table semantics. */
-@container result (max-width: 819px) {
+/* Narrow result area: each task becomes a card (device and actions on top, testers below) */
+@container result (max-width: 640px) {
   .result-table, .result-table tbody { display: block; }
   .result-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-  .result-table tr {
-    position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px;
-    padding: 14px 16px 14px 18px;
+  .result-table tr.group-head { display: block; }
+  .result-table tr.group-head th { display: block; padding: 18px 16px 8px; }
+  .result-table tr.result-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; align-items: start;
+    padding: 12px 16px; border-top: 1px solid var(--separator);
   }
-  .result-table tbody tr + tr { border-top: 1px solid var(--separator); }
+  .result-table tr.result-row td { display: block; padding: 0; border: 0; background: none; box-shadow: none; min-width: 0; }
+  .result-table tr.result-row .c-testers { grid-column: 1 / -1; grid-row: 2; }
+  .result-table tr.result-row .c-actions { grid-column: 2; grid-row: 1; }
   .result-table tr.is-mine { background: var(--accent-tint); box-shadow: inset 4px 0 0 var(--accent); }
-  .result-table td, .result-table td:first-child, .result-table tr.is-mine td, .result-table tr.is-mine td:first-child,
-  .result-table tbody tr + tr td {
-    display: grid; gap: 1px; padding: 0; background: none; border: 0; box-shadow: none; min-width: 0;
-  }
-  .result-table td::before { content: attr(data-label); font-size: 12px; font-weight: 500; color: var(--label-2); }
-  .result-table .c-what, .result-table .c-assignee { grid-column: 1 / -1; }
-  .result-table .c-what::before { content: none; }
-  .result-table .c-what .task-what { font-size: 17px; white-space: normal; }
-  .result-table .task-what-box { max-width: none; }
-  .result-table td:not(.c-what):not(.c-assignee) { color: var(--label); }
-  .match { white-space: normal; }
-}
-
-@container result (min-width: 480px) and (max-width: 819px) {
-  .result-table tr { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .result-table .c-assignee { grid-column: span 2; }
-}
-
-@container result (max-width: 340px) {
-  .result-table tr { gap: 6px 12px; padding: 12px 14px 12px 16px; }
 }
 
 @media (max-width: 560px) {

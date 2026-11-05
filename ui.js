@@ -1195,7 +1195,7 @@ export function renderResult(state) {
 
   const key = JSON.stringify([spin.spin_number, state.mineOnly, state.me, spin.created_at, takeoverKey(spin, ctx)]);
   if (key !== tableKey) {
-    els.resultBody.replaceChildren(...visible.map((a) => resultRow(a, ctx)));
+    els.resultBody.replaceChildren(...groupedRows(visible, ctx));
     tableKey = key;
   }
   renderTakeovers(spin, ctx);
@@ -1310,30 +1310,34 @@ function handoverText(o, ctx) {
   return null;
 }
 
-/** One tester: You tag, name, team badge, team match, how they got it, and the request controls for their place. */
+/**
+ * One tester: You tag and name; their team only when it isn't the task's (cross-team); how they
+ * got the task, quietly; and on the right, the request control for their place.
+ */
 function ownerLine(a, o, ctx) {
   const li = el("li", `owner${o.user_id === ctx.me ? " is-me" : ""}`);
+  const info = el("div", "owner-info");
   const top = el("span", "owner-top");
   if (o.user_id === ctx.me) top.append(el("span", "tag tag-you", "You"));
   top.append(el("span", "assignee-name", o.name));
-  const badge = el("span", "team-badge", o.team ?? "");
-  badge.dataset.team = o.team ?? "";
-  top.append(badge);
-  if (o.team_match === true) {
-    const m = el("span", "match match-yes");
-    m.append(statusIcon("check"), el("span", "sr-only", "Team match"));
-    m.title = "Team match";
-    top.append(m);
-  } else if (o.team_match === false) {
-    const m = el("span", "match match-no");
-    m.append(statusIcon("swap"), document.createTextNode("Cross-team"));
-    top.append(m);
+  if (o.team_match === false) {
+    const cross = el("span", "cross-team");
+    const badge = el("span", "team-badge", o.team ?? "");
+    badge.dataset.team = o.team ?? "";
+    cross.append(badge, document.createTextNode("cross-team"));
+    cross.title = `${o.name} is in ${o.team}; this task is ${a.task.team}'s`;
+    top.append(cross);
   }
-  li.append(top);
+  info.append(top);
   const how = handoverText(o, ctx);
-  if (how) li.append(el("span", "handover", how));
+  if (how) info.append(el("span", "handover", how));
+  li.append(info);
   const controls = slotControls(a, o, ctx);
-  if (controls) li.append(controls);
+  if (controls) {
+    // Notes ("Cy asked to take your place") read with the name; only the buttons go to the right
+    for (const note of controls.querySelectorAll(".takeover-note")) info.append(note);
+    if (controls.childNodes.length) li.append(controls);
+  }
   return li;
 }
 
@@ -1500,33 +1504,71 @@ function cell(label, content, className) {
   return td;
 }
 
+/**
+ * The table, grouped: one header row per run of tasks that share name, theme, team and user
+ * levels (in the defaults, a release in one theme), then one row per device. What a whole group
+ * shares is said once instead of on every row.
+ */
+function groupedRows(assignments, ctx) {
+  const groups = [];
+  for (const a of assignments) {
+    const t = a.task;
+    const key = JSON.stringify([t.what, t.theme, t.team, t.users]);
+    const last = groups[groups.length - 1];
+    if (last && last.key === key) last.items.push(a);
+    else groups.push({ key, items: [a] });
+  }
+  return groups.flatMap((g) => [groupRow(g.items[0].task, g.items, ctx), ...g.items.map((a) => resultRow(a, ctx))]);
+}
+
+function groupRow(t, items, ctx) {
+  const tr = el("tr", "group-head");
+  tr.setAttribute("role", "row");
+  const th = el("th", null);
+  th.setAttribute("role", "rowheader");
+  th.colSpan = 3;
+  th.scope = "colgroup";
+  const line = el("div", "group-line");
+  line.append(el("span", "group-name", t.what), themeTag(t.theme));
+  if (t.team) {
+    const badge = el("span", "team-badge", t.team);
+    badge.dataset.team = t.team;
+    badge.title = `Team ${t.team}`;
+    line.append(badge);
+  } else {
+    line.append(el("span", "group-any", "All teams"));
+  }
+  if (t.users.length) line.append(el("span", "group-users", labelsIn(USER_LEVELS, t.users).join(", ")));
+  const mine = items.filter((a) => isOwner(a, ctx.me)).length;
+  if (mine) line.append(el("span", "group-mine", mine === 1 ? "1 is yours" : `${mine} are yours`));
+  th.append(line);
+  tr.append(th);
+  return tr;
+}
+
+const DEVICE_ICONS = { desktop: "desktop", mac: "laptop", android: "phone", ios: "phone" };
+
 function resultRow(a, ctx) {
   const t = a.task;
   const isMine = isOwner(a, ctx.me);
-  const tr = el("tr", isMine ? "is-mine" : a.owners.length === 0 ? "is-unassigned" : "");
+  const tr = el("tr", `result-row${isMine ? " is-mine" : a.owners.length === 0 ? " is-unassigned" : ""}`);
   tr.setAttribute("role", "row");
   tr.dataset.taskId = t.id;
+  const description = describeTask(t);
 
-  const what = el("div", "task-what-box");
-  const name = el("span", "task-what-text");
-  name.append(el("span", "task-what", t.what));
-  if (t.users.length) name.append(el("span", "task-users", labelsIn(USER_LEVELS, t.users).join(", ")));
-  what.append(name);
-  if (ctx.isHost && ctx.open) {
-    // The moderator's tools for this task: edit it, delete it (two presses)
-    const description = describeTask(t);
-    const tools = el("span", "row-tools");
-    const edit = iconButton("pencil", `Edit ${description}`, "edit-task", t.id);
-    const del = iconButton("trash", `Delete ${description}`, "delete-task", t.id);
-    del.classList.add("icon-btn-danger", "btn-confirmable");
-    del.append(el("span", "when-armed", "Delete"));
-    edit.disabled = !ctx.canEdit;
-    del.disabled = !ctx.canEdit || ctx.lastTask;
-    if (ctx.lastTask) del.title = "A room needs at least one task.";
-    tools.append(edit, del);
-    what.append(tools);
+  // Device (the group header says what the task is; screen readers get it here too)
+  const device = el("div", "device-box");
+  const names = el("span", "device-names");
+  names.append(el("span", "sr-only", `${t.what}, ${labelIn(THEMES, t.theme)}: `));
+  for (const d of t.devices) {
+    const item = el("span", "device-name");
+    item.append(icon(DEVICE_ICONS[d] ?? "desktop", "icon icon-stroke"), document.createTextNode(labelIn(DEVICES, d)));
+    names.append(item);
   }
+  device.append(names);
+  if (taskBrowsers(t).length) device.append(el("span", "device-browsers", browsersText(t, " · ")));
 
+  // Testers
   const testers = el("div", "assignee-box");
   if (a.owners.length === 0) {
     const none = el("div", "unassigned-box");
@@ -1539,22 +1581,28 @@ function resultRow(a, ctx) {
     list.append(...a.owners.map((o) => ownerLine(a, o, ctx)));
     testers.append(list);
   }
-  if (ctx.open && canJoinTask(a, ctx.meRow)) testers.append(joinButton(a, ctx));
+
+  // Actions: Assign me, and the moderator's tools as icon buttons
+  const actions = el("div", "row-actions");
+  if (ctx.open && canJoinTask(a, ctx.meRow)) actions.append(joinButton(a, ctx));
   if (ctx.isHost && ctx.open) {
-    const change = actionButton(null, "btn btn-plain btn-small btn-inline testers-btn", { action: "testers", taskId: t.id }, ctx.canEdit);
-    change.append(icon("people", "icon icon-stroke"), el("span", null, a.owners.length ? "Change testers" : "Assign testers"));
-    change.setAttribute("aria-label", `${a.owners.length ? "Change testers" : "Assign testers"} for ${describeTask(t)}`);
-    testers.append(change);
+    const tools = el("span", "row-tools");
+    const change = iconButton("people", `${a.owners.length ? "Change testers" : "Assign testers"} for ${description}`, "testers", t.id);
+    change.title = a.owners.length ? "Change testers" : "Assign testers";
+    const edit = iconButton("pencil", `Edit ${description}`, "edit-task", t.id);
+    edit.title = "Edit task";
+    const del = iconButton("trash", `Delete ${description}`, "delete-task", t.id);
+    del.title = ctx.lastTask ? "A room needs at least one task." : "Delete task";
+    del.classList.add("icon-btn-danger", "btn-confirmable");
+    del.append(el("span", "when-armed", "Delete"));
+    change.disabled = !ctx.canEdit;
+    edit.disabled = !ctx.canEdit;
+    del.disabled = !ctx.canEdit || ctx.lastTask;
+    tools.append(change, edit, del);
+    actions.append(tools);
   }
 
-  tr.append(
-    cell("Task", what, "c-what"),
-    cell("Theme", themeTag(t.theme)),
-    cell("Devices", labelsIn(DEVICES, t.devices).join(", ")),
-    cell("Browsers", taskBrowsers(t).length ? browsersText(t) : "—"),
-    cell("Task team", t.team ?? "Any"),
-    cell(a.owners.length > 1 ? `Testers (${a.owners.length})` : "Tester", testers, "c-assignee")
-  );
+  tr.append(cell("Device", device, "c-device"), cell("Testers", testers, "c-testers"), cell("Actions", actions, "c-actions"));
   return tr;
 }
 
