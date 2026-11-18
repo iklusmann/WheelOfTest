@@ -40,6 +40,8 @@ Then run `node scripts/build-env.mjs` (Node 20.12+) to generate `env.js`, which 
 
 **Session links.** Every room has up to two links the team uses in the session (for example the test environment and the test cases). They are set on the **Create room** form and show up as buttons in a bar at the top of the room, above the wheel, opening in a new tab; the moderator can change them in the room with **Edit links** at any time. `SESSION_LINK_1` and `SESSION_LINK_2` are the **defaults** the create form starts with: the moderator can keep, change or clear them for each room. The format is `Label | URL`; without a label the host name is shown. Only `http(s)` URLs are accepted (anything else is ignored with a warning in the browser console, and the database refuses it). Put the value in quotes in `.env` (as above): an unquoted value is cut at the first `#`, so a URL with a fragment would lose it. In a GitHub repository variable, enter the bare `Label | URL` (quotes are tolerated there too).
 
+When either session link is unset, its built-in QA Testing or Release Changelog link is used. Set the corresponding variable to override it.
+
 Both values are public by design. Never put the secret/service-role key or the database password in `.env`.
 
 `config.js` also holds `roomCapacity` (30) and `complaintThreshold` (2). The database enforces both through `public.wot_room_capacity()` and `public.wot_complaint_threshold()` in `schema.sql`. The same goes for `maxTasks` (50) and `taskNameMaxLength` (60), which `public._wot_clean_tasks()` enforces, for `maxPendingRequests` (5, `public.wot_max_pending_requests()`) and for `maxTasksPerPerson` (10, `public.wot_max_tasks_per_person()`). If you change one side, change the other.

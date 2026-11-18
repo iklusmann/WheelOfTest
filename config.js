@@ -39,19 +39,27 @@ const DEFAULT_SESSION_LINKS = [
   "Release Changelog | https://docs.e3dc.com/spaces/CLOUD/pages/98239113/Changelog"
 ];
 
-th: 40,
+export const CONFIG = {
+  supabaseUrl: ENV.SUPABASE_URL || "",
+  supabasePublishableKey: ENV.SUPABASE_PUBLISHABLE_KEY || "",
 
-  // Links the team uses in every test session (e.g. the test environment and the test cases).
-  // Shown at the top of the room. Set SESSION_LINK_1 and SESSION_LINK_2 in .env.
-  sessionLinks: [["SESSION_LINK_1", ENV.SESSION_LINK_1], ["SESSION_LINK_2", ENV.SESSION_LINK_2]]
-    .map(([name, raw]) => sessionLink(name, raw))
-    .filter(Boolean),
+  teams: list(ENV.TEAM_OPTIONS).length ? list(ENV.TEAM_OPTIONS) : ["AF", "CYD", "PB"],
+  nameMaxLength: 40,
 
-  // The det SESSION_LINK_1 and SESSESSION_LINK_1 and SESSION_LINK_2 in .env override these defaults.
+  // Links the team uses in every test session. Environment values override these defaults.
   sessionLinks: [
     ["SESSION_LINK_1", ENV.SESSION_LINK_1 || DEFAULT_SESSION_LINKS[0]],
     ["SESSION_LINK_2", ENV.SESSION_LINK_2 || DEFAULT_SESSION_LINKS[1]]
-  e enforces them in public._wot_clean_tasks().
+  ]
+    .map(([name, raw]) => sessionLink(name, raw))
+    .filter(Boolean),
+
+  // The database enforces these two. Keep them equal to
+  // public.wot_room_capacity() and public.wot_complaint_threshold() in supabase/schema.sql.
+  roomCapacity: 300,
+  complaintThreshold: 2,
+
+  // Per-room task list limits. The database enforces them in public._wot_clean_tasks().
   maxTasks: 50,
   taskNameMaxLength: 60,
 
