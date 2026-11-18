@@ -307,173 +307,208 @@ export const tasksOf = (assignments, userId) => (Array.isArray(assignments) ? as
 // ---------------------------------------------------------------- assignment
 
 const taskSnapshot = normalizeTask;
+const perPersonOf = (value) => Math.max(1, Math.trunc(Number(value)) || 1);
 
-/**
- * One task for as many people as possible, before anything else is shared out: a maximum
- * bipartite matching (augmenting paths; at most 30 people × 50 tasks, so it is instant).
- * People first try their own team's tasks, then all-teams tasks; only people who can't get
- * one that way may take another team's task. Returns Map(user_id → task).
- */
-function oneTaskEach(tasks, people, random) {
-  const order = shuffle(tasks, random);
-  const holder = new Map();   // task id → person
-  const given = new Map();    // user_id → task
-  const ownTeam = (p, t) => t.team != null && t.team === p.team;
-  const options = (p, crossTeam) => {
-    const ok = order.filter((t) => canReceiveTask(t, p) && (crossTeam || t.team == null || ownTeam(p, t)));
-    return [...ok.filter((t) => ownTeam(p, t)), ...ok.filter((t) => !ownTeam(p, t))];
-  };
-  const augment = (p, crossTeam, seen) => {
-    for (const t of options(p, crossTeam)) {
-      if (seen.has(t.id)) continue;
-      seen.add(t.id);
-      const other = holder.get(t.id);
-      if (!other || augment(other, crossTeam, seen)) {
-        holder.set(t.id, p);
-        given.set(p.user_id, t);
-        return true;
-      }
-    }
-    return false;
-  };
-  const shuffled = shuffle(people, random);
-  for (const p of shuffled) augment(p, false, new Set());
-  for (const p of shuffled) if (!given.has(p.user_id)) augment(p, true, new Set());
-  return given;
+/** Why a task nobody got stays empty when people could take it. Same text as public._wot_full_reason(). */
+export function fullReason(tasksPerPerson) {
+  const n = perPersonOf(tasksPerPerson);
+  return `Everyone online who can take it already has ${n} task${n === 1 ? "" : "s"}.`;
 }
+
+/** Whether a task is one of the person's own team's (all-teams tasks count as cross-team). */
+export const isOwnTeamTask = (task, participant) => task.team != null && task.team === participant.team;
 
 /** How many of these tasks a participant has the devices for. */
 export const compatibleCount = (tasks, participant) => tasks.filter((t) => canReceiveTask(t, participant)).length;
 
-/**
- * Online people who will get fewer than `tasksPerPerson` tasks, because there aren't that many
- * tasks they have the devices for. Exact: a task can have several testers, so anyone gets
- * min(tasksPerPerson, the tasks they can take). Returns [{ participant, max }].
- */
-export function peopleShortOfTasks(tasks, participants, tasksPerPerson = 1) {
-  const want = Math.max(1, Math.trunc(Number(tasksPerPerson)) || 1);
-  return participants
-    .filter((p) => p && p.online === true)
-    .map((p) => ({ participant: p, max: compatibleCount(tasks, p) }))
-    .filter((x) => x.max < want);
+// ---- a small min-cost flow with lexicographic costs
+// A cost is a vector compared component by component, so every component outweighs all the
+// ones after it, whatever the numbers. That keeps the rules in a strict order without weights.
+const FAIR = 0;     // -1 for a person's first task: as many people as possible get one
+const COUNT = 1;    // -1 per task: everyone gets as close to tasks-per-person as the tasks allow
+const BALANCE = 2;  // +k for a person's k-th task: even loads (only matters above 2 per person)
+const MIX = 3;      // +1 for each task beyond "one own team's, one cross-team"
+const COVER = 4;    // -1 for a task's first tester: as many tasks as possible get someone
+const NOISE = 5;    // random tie-break, so equally good assignments come up at random
+const DIMS = 6;
+
+const costOf = (parts) => {
+  const c = new Array(DIMS).fill(0);
+  for (const [i, x] of parts) c[i] = x;
+  return c;
+};
+const isNegative = (c) => {
+  for (let i = 0; i < DIMS; i += 1) if (c[i] !== 0) return c[i] < 0;
+  return false;
+};
+/** (a + b) < c, lexicographically, without allocating. */
+function sumLess(a, b, c) {
+  for (let i = 0; i < DIMS; i += 1) {
+    const x = a[i] + b[i];
+    if (x !== c[i]) return x < c[i];
+  }
+  return false;
+}
+
+class UnitFlow {
+  constructor(size) {
+    this.adj = Array.from({ length: size }, () => []);
+    this.to = [];
+    this.cap = [];
+    this.cost = [];
+  }
+
+  /** One unit of capacity from u to v; returns the edge index (its reverse is index ^ 1). */
+  add(u, v, cost) {
+    const e = this.to.length;
+    this.adj[u].push(e);
+    this.to.push(v); this.cap.push(1); this.cost.push(cost);
+    this.adj[v].push(e + 1);
+    this.to.push(u); this.cap.push(0); this.cost.push(cost.map((x) => -x));
+    return e;
+  }
+
+  /** Send units from s to t along cheapest paths while that still lowers the total cost. */
+  run(s, t) {
+    const n = this.adj.length;
+    for (;;) {
+      // Bellman-Ford with a queue (the residual graph has negative edges but no negative cycles)
+      const dist = new Array(n).fill(null);
+      const via = new Int32Array(n).fill(-1);
+      const queued = new Uint8Array(n);
+      const queue = [s];
+      dist[s] = new Array(DIMS).fill(0);
+      queued[s] = 1;
+      for (let head = 0; head < queue.length; head += 1) {
+        const u = queue[head];
+        queued[u] = 0;
+        for (const e of this.adj[u]) {
+          if (this.cap[e] === 0) continue;
+          const v = this.to[e];
+          if (dist[v] !== null && !sumLess(dist[u], this.cost[e], dist[v])) continue;
+          dist[v] = dist[u].map((x, i) => x + this.cost[e][i]);
+          via[v] = e;
+          if (!queued[v]) { queued[v] = 1; queue.push(v); }
+        }
+      }
+      if (dist[t] === null || !isNegative(dist[t])) return;
+      for (let v = t; v !== s; v = this.to[via[v] ^ 1]) {
+        this.cap[via[v]] -= 1;
+        this.cap[via[v] ^ 1] += 1;
+      }
+    }
+  }
 }
 
 /**
- * Assign every task to online participants.
+ * Assign the tasks to the people online.
  *
  * tasks: room tasks (current or legacy shape)
  * participants: [{ user_id, name, team, mac, android, ios, online }]
  * random: () => number in [0, 1)
- * options.tasksPerPerson: at least this many tasks for everyone online (default 1)
+ * options.tasksPerPerson: the most tasks anyone gets (default CONFIG.defaultTasksPerPerson)
+ * options.maxTesters: the most testers a task gets (default CONFIG.maxTestersPerTask)
  *
- * 1. Everyone online gets one task first, whenever the tasks allow it (see oneTaskEach).
- * 2. The rest: team tasks, then all-teams tasks; each goes to a compatible member of the
- *    task's team if one is online (otherwise anyone compatible), the one with the fewest tasks.
- *    Now every task someone can take has exactly one tester.
- * 3. Top up: while someone online has fewer than tasksPerPerson tasks and there is a task they
- *    can take and don't test yet, the person with the fewest tasks becomes an extra tester of
- *    such a task: own team's or all-teams tasks first, then the task with the fewest testers.
- *    So everyone ends with at least min(tasksPerPerson, the tasks they can take), and extra
- *    testers are spread evenly. With 1, this only covers people step 1 couldn't give a task
- *    to (more people than tasks), who then test a task together with someone.
+ * Hard rules: the device rule (canReceiveTask), nobody above tasksPerPerson, no task above
+ * maxTesters, nobody twice on a task. Within them, in this order (an earlier rule always wins):
+ *   1. as many people as possible get a task;
+ *   2. as many tasks as possible are handed out, so everyone gets tasksPerPerson if the tasks allow;
+ *   3. loads are even;
+ *   4. each person's first task is their own team's and the second a cross-team one (another
+ *      team's or an all-teams task); with 1 per person, their own team's or an all-teams task;
+ *      beyond 2, either;
+ *   5. as many tasks as possible get a tester; a second tester only where nothing else is left;
+ *   6. among equally good results, chance decides.
+ * This is solved exactly (a min-cost flow), so the counts never depend on luck; only who gets
+ * which of equally good tasks does.
  *
  * Returns { ok: true, assignments } with one entry per task, in the order of `tasks`:
  * { task_id, task, owners: [{ user_id, name, team, mac, android, ios, team_match }], reason },
- * or { ok: false, error } when nobody is online. A task that needs a Mac or phone nobody
- * online has is returned with no testers and a reason.
+ * or { ok: false, error } when nobody is online. A task nobody got has a reason: the Mac or
+ * phone nobody online has (unassignedReason), or that everyone who could take it is full (fullReason).
  */
 export function assignTasks(tasks, participants, random, options = {}) {
   if (!Array.isArray(tasks) || !Array.isArray(participants)) throw new TypeError("tasks and participants must be arrays");
   if (typeof random !== "function") throw new TypeError("random must be a function");
-  const perPerson = Math.max(1, Math.trunc(Number(options.tasksPerPerson ?? 1)) || 1);
+  const perPerson = perPersonOf(options.tasksPerPerson ?? CONFIG.defaultTasksPerPerson);
+  const maxTesters = Math.max(1, Math.trunc(Number(options.maxTesters ?? CONFIG.maxTestersPerTask)) || 1);
 
   const online = participants.filter((p) => p && p.online === true);
   if (online.length === 0) {
     return { ok: false, error: "Nobody is online, so there is no one to assign tasks to.", assignments: [] };
   }
 
-  const byTaskId = new Map();
-  const load = new Map(online.map((p) => [p.user_id, 0]));
-  const give = (task, chosen) => {
-    load.set(chosen.user_id, load.get(chosen.user_id) + 1);
-    byTaskId.set(task.id, { task_id: task.id, task: taskSnapshot(task), owners: [ownerOf(chosen, task)], reason: null });
-  };
+  // Shuffled, so the order the graph is built in doesn't favour anyone either
+  const people = shuffle(online, random);
+  const order = shuffle(tasks.map((t, i) => ({ t, i })), random);
+  const S = 0;
+  const T = 1;
+  const nodeP = (i) => 2 + 3 * i;   // the person
+  const nodeO = (i) => 3 + 3 * i;   // their own-team slot
+  const nodeC = (i) => 4 + 3 * i;   // their cross-team slot
+  const nodeTask = (j) => 2 + 3 * people.length + j;
+  const g = new UnitFlow(2 + 3 * people.length + tasks.length);
 
-  const people = new Map(online.map((p) => [p.user_id, p]));
-  for (const [userId, task] of oneTaskEach(tasks, online, random)) give(task, people.get(userId));
-
-  const rest = tasks.filter((t) => !byTaskId.has(t.id));
-  const teamTasks = shuffle(rest.filter((t) => t.team != null), random);
-  const neutralTasks = shuffle(rest.filter((t) => t.team == null), random);
-
-  for (const task of [...teamTasks, ...neutralTasks]) {
-    const candidates = online.filter((p) => canReceiveTask(task, p));
-    if (candidates.length === 0) {
-      byTaskId.set(task.id, { task_id: task.id, task: taskSnapshot(task), owners: [], reason: unassignedReason(task) });
-      continue;
+  const picks = [];   // [edge, person, task index]
+  people.forEach((p, i) => {
+    for (let k = 1; k <= perPerson; k += 1) {
+      g.add(S, nodeP(i), costOf([[FAIR, k === 1 ? -1 : 0], [COUNT, -1], [BALANCE, k]]));
     }
-    const preferred = task.team == null ? [] : candidates.filter((p) => p.team === task.team);
-    const pool = preferred.length > 0 ? preferred : candidates;
-    const fewest = Math.min(...pool.map((p) => load.get(p.user_id)));
-    const tied = pool.filter((p) => load.get(p.user_id) === fewest);
-    give(task, tied[pickIndex(tied.length, random)]);
-  }
+    const able = order.filter(({ t }) => canReceiveTask(t, p));
+    // With a single task each there is no cross-team slot: all-teams tasks are as good as their own
+    const ownSlot = ({ t }) => isOwnTeamTask(t, p) || (perPerson === 1 && t.team == null);
+    const own = able.filter(ownSlot);
+    const cross = able.filter((x) => !ownSlot(x));
+    // The first own-team task is free, and so is the first cross-team one when there are 2+ per person
+    for (let k = 1; k <= Math.min(perPerson, own.length); k += 1) g.add(nodeP(i), nodeO(i), costOf([[MIX, k === 1 ? 0 : 1]]));
+    for (let k = 1; k <= Math.min(perPerson, cross.length); k += 1) g.add(nodeP(i), nodeC(i), costOf([[MIX, k === 1 && perPerson >= 2 ? 0 : 1]]));
+    for (const { i: j } of own) picks.push([g.add(nodeO(i), nodeTask(j), costOf([[NOISE, pickIndex(1000, random)]])), p, j]);
+    for (const { i: j } of cross) picks.push([g.add(nodeC(i), nodeTask(j), costOf([[NOISE, pickIndex(1000, random)]])), p, j]);
+  });
+  tasks.forEach((_, j) => {
+    for (let k = 1; k <= maxTesters; k += 1) g.add(nodeTask(j), T, costOf([[COVER, k === 1 ? -1 : 0]]));
+  });
+  g.run(S, T);
 
-  // 3. Top up to tasksPerPerson
-  const slots = tasks.map((task) => ({ task, entry: byTaskId.get(task.id) }));
-  const extra = new Set();   // "task id|user id" of testers added in this step (step 4 may move them)
-  const openFor = (p) => slots.filter(({ task, entry }) => !isOwner(entry, p.user_id) && canReceiveTask(task, p));
-  // A person's choices: own team's and all-teams tasks if any, else anything they can take
-  const poolFor = (p) => {
-    const open = openFor(p);
-    const preferred = open.filter(({ task }) => task.team == null || task.team === p.team);
-    return preferred.length > 0 ? preferred : open;
+  const testers = tasks.map(() => []);
+  for (const [e, p, j] of picks) if (g.cap[e] === 0) testers[j].push(p);
+  const rank = new Map(online.map((p, i) => [p.user_id, i]));
+  return {
+    ok: true,
+    error: null,
+    assignments: tasks.map((task, j) => {
+      // Own team first, then in the order people joined
+      const chosen = testers[j].sort((a, b) => Number(isOwnTeamTask(task, b)) - Number(isOwnTeamTask(task, a)) || rank.get(a.user_id) - rank.get(b.user_id));
+      const reason = chosen.length ? null
+        : online.some((p) => canReceiveTask(task, p)) ? fullReason(perPerson) : unassignedReason(task);
+      return { task_id: task.id, task: taskSnapshot(task), owners: chosen.map((p) => ownerOf(p, task)), reason };
+    })
   };
-  const fewestIn = (pool) => Math.min(...pool.map(({ entry }) => entry.owners.length));
-  for (;;) {
-    const needy = online.filter((p) => load.get(p.user_id) < perPerson && openFor(p).length > 0);
-    if (needy.length === 0) break;
-    // The fewest tasks first; among those, whoever can reach the least-shared task, so
-    // extra testers spread over the tasks instead of piling up on one
-    const least = Math.min(...needy.map((p) => load.get(p.user_id)));
-    const behind = needy.filter((p) => load.get(p.user_id) === least).map((p) => ({ p, pool: poolFor(p) }));
-    const lowest = Math.min(...behind.map(({ pool }) => fewestIn(pool)));
-    const tied = behind.filter(({ pool }) => fewestIn(pool) === lowest);
-    const { p: person, pool } = tied[pickIndex(tied.length, random)];
-    const choices = pool.filter(({ entry }) => entry.owners.length === lowest);
-    const pick = choices[pickIndex(choices.length, random)];
-    pick.entry.owners.push(ownerOf(person, pick.task));
-    pick.entry.reason = null;
-    extra.add(`${pick.task.id}|${person.user_id}`);
-    load.set(person.user_id, load.get(person.user_id) + 1);
-  }
+}
 
-  // 4. Even out: while one task has at least two testers more than another, move an extra tester
-  //    (never the first one) from the fuller task to the emptier one, if they can take it and it
-  //    is not worse for their team. Nobody's count changes; every move lowers the spread, so this ends.
-  const preferredFor = (task, p) => task.team == null || task.team === p.team;
-  for (let moved = true; moved;) {
-    moved = false;
-    const bySize = [...slots].filter(({ entry }) => entry.owners.length > 0).sort((x, y) => y.entry.owners.length - x.entry.owners.length);
-    for (const from of bySize) {
-      for (const to of [...bySize].reverse()) {
-        if (from.entry.owners.length - to.entry.owners.length < 2) break;
-        const mover = from.entry.owners.find((o, i) => i > 0 && extra.has(`${from.task.id}|${o.user_id}`)
-          && !isOwner(to.entry, o.user_id) && canReceiveTask(to.task, people.get(o.user_id))
-          && (preferredFor(to.task, o) || !preferredFor(from.task, o)));
-        if (!mover) continue;
-        from.entry.owners = from.entry.owners.filter((o) => o !== mover);
-        to.entry.owners.push(ownerOf(people.get(mover.user_id), to.task));
-        extra.delete(`${from.task.id}|${mover.user_id}`);
-        extra.add(`${to.task.id}|${mover.user_id}`);
-        moved = true;
-        break;
-      }
-      if (moved) break;
-    }
-  }
-
-  return { ok: true, error: null, assignments: tasks.map((t) => byTaskId.get(t.id)) };
+/**
+ * What a spin would give the people online now, for the moderator's warning before spinning.
+ * The counts are the same for every spin (assignTasks maximizes them); who exactly is short
+ * may differ. Returns null when nobody is online, else
+ * { perPerson, online, short: [{ participant, got, able, why: "devices" | "places" }], noDevice, full }:
+ * short = people who get fewer than tasks per person, because they have the devices for only
+ * `able` tasks ("devices") or every task they could take already has its testers ("places");
+ * noDevice = tasks nobody online has the Mac or phone for; full = tasks left over because
+ * everyone who could take them is at tasks per person.
+ */
+export function spinPreview(tasks, participants, tasksPerPerson, options = {}) {
+  const perPerson = perPersonOf(tasksPerPerson);
+  const result = assignTasks(tasks, participants, () => 0, { ...options, tasksPerPerson: perPerson });
+  if (!result.ok) return null;
+  const online = participants.filter((p) => p && p.online === true);
+  const short = online.map((p) => {
+    const got = tasksOf(result.assignments, p.user_id).length;
+    const able = compatibleCount(tasks, p);
+    return { participant: p, got, able, why: got >= perPerson ? null : got >= able ? "devices" : "places" };
+  }).filter((x) => x.why);
+  const empty = result.assignments.filter((a) => a.owners.length === 0);
+  const noDevice = empty.filter((a) => !online.some((p) => canReceiveTask(a.task, p))).length;
+  return { perPerson, online: online.length, short, noDevice, full: empty.length - noDevice };
 }
 
 /**
@@ -580,9 +615,10 @@ export function canRequestTakeover(assignment, me) {
 
 /**
  * Whether `me` may add themselves to this task with "Assign me": they don't test it yet, have
- * the devices, and it has fewer than `max` testers. Mirrors join_task().
+ * the devices, and it has fewer than `max` testers. Tasks per person doesn't limit this: it only
+ * shapes the spin. Mirrors join_task().
  */
-export function canJoinTask(assignment, me, max = CONFIG.maxTestersToJoin) {
+export function canJoinTask(assignment, me, max = CONFIG.maxTestersPerTask) {
   if (!assignment || !me) return false;
   return !isOwner(assignment, me.user_id) && canReceiveTask(assignment.task, me) && assignment.owners.length < max;
 }

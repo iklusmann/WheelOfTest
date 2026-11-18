@@ -5,7 +5,7 @@ import { DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js"
 import {
   spinRule, tasksEditable, isDefaultTaskList, taskBrowsers,
   hasCriticalFlows, isCriticalFlow, CRITICAL_FLOW_COUNT,
-  peopleShortOfTasks, takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests,
+  spinPreview, takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests,
   canReceiveTask, isOwner, tasksOf, canJoinTask, canLeaveTask
 } from "./domain.js";
 import { drawWheel } from "./reveal.js";
@@ -22,10 +22,13 @@ export const els = {
   viewRoom: $("view-room"), roomHeading: $("room-heading"), roomAlert: $("room-alert"),
   sessionLinks: $("session-links"), sessionLinksList: $("session-links-list"), linksEdit: $("links-edit"),
   linksForm: $("links-form"), roomLinks: $("room-links"), linksError: $("links-error"), linksCancel: $("links-cancel"), linksSave: $("links-save"),
-  formSettings: $("form-settings"), formColRoom: $("form-col-room"), tasksPerPerson: $("tasks-per-person"), tasksPerPersonError: $("tasks-per-person-error"), formLinks: $("form-links"),
+  formSettings: $("form-settings"), formLinksSection: $("form-links-section"), formColRoom: $("form-col-room"), tasksPerPerson: $("tasks-per-person"), tasksPerPersonError: $("tasks-per-person-error"), formLinks: $("form-links"),
   roomSettings: $("room-settings"), roomStepper: $("room-stepper"), roomTasksPerPerson: $("room-tasks-per-person"),
   roomTasksPerPersonValue: $("room-tasks-per-person-value"), roomSettingsHint: $("room-settings-hint"),
-  resultAdd: $("result-add"), resultSettings: $("result-settings"),
+  resultAdd: $("result-add"), resultSettings: $("result-settings"), resultExport: $("result-export"),
+  exportDialog: $("export-dialog"), exportForm: $("export-form"), exportMeta: $("export-meta"), exportHint: $("export-hint"),
+  exportPreview: $("export-preview"), exportMarkup: $("export-markup"), exportStatus: $("export-status"),
+  exportClose: $("export-close"), exportDownload: $("export-download"), exportCopy: $("export-copy"),
   taskTesters: $("task-testers"), taskTestersChips: $("task-testers-chips"), taskTestersNote: $("task-testers-note"),
   testersDialog: $("testers-dialog"), testersForm: $("testers-form"), testersTask: $("testers-task"), testersChips: $("testers-chips"),
   testersError: $("testers-error"), testersCancel: $("testers-cancel"), testersSave: $("testers-save"),
@@ -179,13 +182,14 @@ export function renderForm({ mode, code = null, profile = null, settings = null 
   }
   els.formTasks.hidden = mode !== "create";
   els.formSettings.hidden = mode !== "create";
+  els.formLinksSection.hidden = mode !== "create";
   els.formColRoom.hidden = mode !== "create";
   els.viewForm.classList.toggle("is-create", mode === "create");
   els.formSubmit.dataset.label = els.formSubmit.textContent;
   const form = els.form;
   form.reset();
   if (mode === "create") {
-    els.tasksPerPerson.value = String(settings?.tasksPerPerson ?? 1);
+    els.tasksPerPerson.value = String(settings?.tasksPerPerson ?? CONFIG.defaultTasksPerPerson);
     renderLinkRows(els.formLinks, settings?.links ?? [], "form-link");
     setSettingsErrors({});
   }
@@ -963,7 +967,7 @@ function renderRoomTasks(state) {
   // summary and the list on request, so the room isn't one long scroll.
   const open = isHost || state.lobbyTasksOpen;
   els.roomTasksSummary.textContent = isHost ? tasksSummary(room.tasks)
-    : `${plural(room.tasks.length, "task")} · at least ${n} each`;
+    : `${plural(room.tasks.length, "task")} · up to ${n} each`;
   els.roomTasksToggle.hidden = isHost;
   els.roomTasksToggle.textContent = open ? "Hide tasks" : "Show tasks";
   els.roomTasksToggle.setAttribute("aria-expanded", String(open));
@@ -991,9 +995,15 @@ function renderRoomTasks(state) {
   }
   input.disabled = !canEdit;
   syncStepper(els.roomStepper);
-  els.roomSettingsHint.textContent = state.busy === "settings" ? "Saving…"
-    : n === 1 ? "At least one task each. With more people than tasks, some tasks get two testers."
-    : `Everyone gets at least ${n} tasks, so tasks get several testers.`;
+  els.roomSettingsHint.textContent = state.busy === "settings" ? "Saving…" : perPersonHint(n);
+}
+
+/** What tasks per person means for the spin, for the lobby. */
+export function perPersonHint(n) {
+  const cap = `A task gets at most ${CONFIG.maxTestersPerTask} testers.`;
+  if (n === 1) return `The most anyone gets: 1 task, from their own team or all teams where possible. ${cap}`;
+  const rest = n === 2 ? "" : ", the rest where they're needed";
+  return `The most anyone gets: ${n} tasks, one from their own team and one cross-team${rest}. ${cap}`;
 }
 
 function renderConnection(state) {
@@ -1097,7 +1107,7 @@ function renderWheelArea(state) {
   const status = moderatorStatus(state);
   els.wheelStatus.textContent = status ?? (() => {
     const online = snap.participants.filter((p) => isOnline(state, p.user_id)).length;
-    const each = snap.room.tasks_per_person > 1 ? ` At least ${snap.room.tasks_per_person} each.` : "";
+    const each = ` Up to ${plural(snap.room.tasks_per_person, "task")} each.`;
     return online === snap.participants.length
       ? `Everyone is online. ${plural(snap.room.tasks.length, "task")} will be shared out.${each}`
       : `${online} of ${snap.participants.length} people are online. Only people online get tasks.${each}`;
@@ -1110,23 +1120,50 @@ function renderWheelArea(state) {
 
 const countPeople = (n) => (n === 1 ? "1 person" : `${n} people`);
 
-/** Tell the moderator before spinning when someone online can't get as many tasks as the room asks for. */
+// The preview runs the real assignment, so keep it until the tasks, the setting or who is online change
+let previewKey = null;
+let previewValue = null;
+function previewFor(room, roster) {
+  const key = JSON.stringify([room.tasks, room.tasks_per_person, roster.map((p) => [p.user_id, p.team, p.mac, p.android, p.ios, p.online])]);
+  if (key !== previewKey) {
+    previewKey = key;
+    previewValue = spinPreview(room.tasks, roster, room.tasks_per_person);
+  }
+  return previewValue;
+}
+
+/**
+ * Tell the moderator before spinning what the spin can't do with the people online now: who
+ * gets fewer than tasks per person and why, and how many tasks stay unassigned. The counts are
+ * exact (every spin gets the same ones).
+ */
 function coverageWarning(state) {
   const { room, participants } = state.snapshot;
-  const n = room.tasks_per_person;
   const roster = participants.map((p) => ({ ...p, online: isOnline(state, p.user_id) }));
-  const online = roster.filter((p) => p.online);
-  const short = peopleShortOfTasks(room.tasks, roster, n);
-  if (short.length === 0) return null;
+  const preview = previewFor(room, roster);
+  if (!preview) return null;
+  const n = preview.perPerson;
   const wanted = n === 1 ? "a task" : `${n} tasks`;
-  const who = `${short.length} of the ${countPeople(online.length)} online won't get ${wanted}`;
-  const shown = short.slice(0, 3).map(({ participant, max }) =>
-    `${participant.name} can take ${max === 0 ? "none" : max === 1 ? "only 1" : `only ${max}`}`);
-  const more = short.length > 3 ? ` and ${short.length - 3} more` : "";
-  const fix = n > 1
-    ? "Add tasks they have the devices for, lower Tasks per person, or ask them to turn on the Mac and phones they have."
-    : "Add tasks they have the devices for, or ask them to turn on the Mac and phones they have.";
-  return `${who}: ${shown.join(", ")}${more}. ${fix}`;
+  const lines = [];
+  const devices = preview.short.filter((x) => x.why === "devices");
+  const places = preview.short.filter((x) => x.why === "places");
+  if (devices.length) {
+    const shown = devices.slice(0, 3).map(({ participant, able }) => `${participant.name} can take ${able === 0 ? "none" : `only ${able}`}`);
+    const more = devices.length > 3 ? ` and ${devices.length - 3} more` : "";
+    lines.push(`${countPeople(devices.length)} won't get ${wanted}: ${shown.join(", ")}${more}. Add tasks they have the devices for, or ask them to turn on the Mac and phones they have.`);
+  }
+  if (places.length) {
+    const shown = places.slice(0, 3).map(({ participant }) => participant.name);
+    const more = places.length > 3 ? ` and ${places.length - 3} more` : "";
+    lines.push(`${countPeople(places.length)} won't get ${wanted} (${shown.join(", ")}${more}): every task they can take already has ${CONFIG.maxTestersPerTask} testers. Add tasks they can take.`);
+  }
+  if (preview.full) {
+    lines.push(`${plural(preview.full, "task")} will stay unassigned: everyone online who can take ${preview.full === 1 ? "it" : "them"} already has ${wanted}. Raise Tasks per person, or wait for more people.`);
+  }
+  if (preview.noDevice) {
+    lines.push(`${plural(preview.noDevice, "task")} need${preview.noDevice === 1 ? "s" : ""} a Mac or phone nobody online has.`);
+  }
+  return lines.length ? lines.join(" ") : null;
 }
 
 function moderatorStatus(state) {
@@ -1201,9 +1238,9 @@ export function renderResult(state) {
   els.resultHint.textContent = !open ? ""
     : ctx.atLimit ? `You have ${CONFIG.maxPendingRequests} requests waiting. Withdraw one to ask for another.`
     : isHost ? "Change testers, edit or add tasks in the table. You answer takeover requests above."
-    : `Assign me adds you to a task (up to ${CONFIG.maxTestersToJoin} testers). Take over asks for someone's place.`;
-  els.resultSettings.hidden = !(open && snap.room.tasks_per_person > 1);
-  els.resultSettings.textContent = `Tasks per person: at least ${snap.room.tasks_per_person}.`;
+    : `Assign me adds you to a task (up to ${CONFIG.maxTestersPerTask} testers). Take over asks for someone's place.`;
+  els.resultSettings.hidden = !open;
+  els.resultSettings.textContent = `The spin gave everyone up to ${plural(snap.room.tasks_per_person, "task")}.`;
   els.resultAdd.hidden = !(open && isHost);
   const full = snap.room.tasks.length >= CONFIG.maxTasks;
   els.resultAdd.disabled = !ctx.canEdit || full;
@@ -1669,6 +1706,68 @@ function renderComplaints(state) {
 
 export function focusResultTitle() {
   els.resultTitle.focus({ preventScroll: true });
+}
+
+// ------------------------------------------------------------------ export
+
+const EXPORT_TEXT = {
+  table: {
+    hint: "Paste into a Confluence page and it becomes a native table, in Cloud and Data Center alike. Works in Word, Excel and Google Sheets too. The file is a web page with the same table.",
+    copy: "Copy table",
+    download: "Download .html"
+  },
+  wiki: {
+    hint: "For Confluence Data Center or Server: Insert → Markup → Confluence wiki, then paste. The Confluence Cloud editor doesn't accept wiki markup; use Table there.",
+    copy: "Copy markup",
+    download: "Download .txt"
+  }
+};
+
+/**
+ * Fill the export sheet: { format: "table" | "wiki", columns, rows, markup, meta, unassigned: Set of
+ * row indexes }. The preview is built from the same rows the clipboard gets.
+ */
+export function renderExport({ format, columns, rows, markup, meta, unassigned }) {
+  const text = EXPORT_TEXT[format];
+  for (const input of els.exportForm.elements["export-format"]) input.checked = input.value === format;
+  els.exportMeta.textContent = meta;
+  els.exportHint.textContent = text.hint;
+  els.exportCopy.textContent = text.copy;
+  els.exportDownload.textContent = text.download;
+  els.exportPreview.hidden = format !== "table";
+  els.exportMarkup.hidden = format !== "wiki";
+  if (format === "wiki") {
+    if (els.exportMarkup.value !== markup) els.exportMarkup.value = markup;
+    return;
+  }
+  const table = el("table");
+  const head = el("tr");
+  head.append(...columns.map((c) => el("th", null, c)));
+  table.append(el("thead"), el("tbody"));
+  table.tHead.append(head);
+  table.tBodies[0].append(...rows.map((r, i) => {
+    const tr = el("tr");
+    tr.append(...r.map((c, j) => el("td", j === r.length - 1 && unassigned.has(i) ? "is-unassigned" : null, c)));
+    return tr;
+  }));
+  els.exportPreview.replaceChildren(table);
+}
+
+export function openExportDialog() {
+  setExportStatus(null);
+  if (!els.exportDialog.open) els.exportDialog.showModal();
+  els.exportCopy.focus();
+}
+
+export function closeExportDialog() {
+  if (els.exportDialog.open) els.exportDialog.close();
+}
+
+export const readExportFormat = () => els.exportForm.elements["export-format"].value || "table";
+
+export function setExportStatus(message, { error = false } = {}) {
+  els.exportStatus.textContent = message ?? "";
+  els.exportStatus.classList.toggle("is-error", error);
 }
 
 export function flashCopied() {

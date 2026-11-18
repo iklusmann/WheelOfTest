@@ -6,8 +6,9 @@ import {
   validateProfile, normalizeRoomCode, assignTasks, spinRule,
   normalizeTask, validateTask, validateTaskList, newTaskId, tasksEditable,
   withCriticalFlows, CRITICAL_FLOW_COUNT, takeoverChanges, takeoversOpen,
-  normalizeAssignment, ownerIds, tasksOf, suggestOwner, validateTasksPerPerson, validateLinks
+  normalizeAssignment, ownerIds, tasksOf, suggestOwner, validateTasksPerPerson, validateLinks, fullReason
 } from "./domain.js";
+import { EXPORT_COLUMNS, exportRows, toHtmlTable, toWikiMarkup, toTsv, toHtmlDocument, toWikiDocument, exportFileName } from "./export.js";
 import * as backend from "./backend.js";
 import * as ui from "./ui.js";
 import { playReveal } from "./reveal.js";
@@ -35,7 +36,9 @@ const state = {
   editor: null,                // open task editor: { scope: "draft" | "room" | "spin", taskId: string | null }
   testers: null,               // open testers dialog: { taskId }
   linksEditing: false,         // the moderator's links form is open
-  lobbyTasksOpen: false        // a participant opened the lobby's task list
+  lobbyTasksOpen: false,       // a participant opened the lobby's task list
+  exportOpen: false,           // the Export for Confluence sheet is open
+  exportFormat: "table"        // "table" (rich HTML to paste) | "wiki" (Confluence wiki markup)
 };
 
 let subscription = null;
@@ -81,7 +84,9 @@ function render() {
   // A spin landed (or the first spin is shown): post-spin changes were for the spin before it.
   if (state.editor?.scope === "spin" && !spinEditable()) closeEditor();
   if (state.testers && !spinEditable()) closeTesters();
+  if (state.exportOpen && (state.revealing || state.stageSpin === 0)) closeExport();
   ui.renderRoom(state);
+  renderExport();
 }
 
 /** The spin the moderator's post-spin changes apply to is on screen, and nothing else is running. */
@@ -98,8 +103,8 @@ const isOnlineNow = (userId) => userId === state.me ? state.connection === "conn
 /**
  * Read any stored state in the current shape: rooms created before tasks were editable store an
  * older task shape; spins from before several testers per task have one participant per task.
- * A database from before these features sends no requests, settings or links: no requests, one
- * task per person, and the configured default links.
+ * A database from before these features sends no requests, settings or links: no requests, the
+ * default tasks per person, and the configured default links.
  */
 function normalizeSnapshot(snap) {
   if (!snap?.room) return snap;
@@ -109,7 +114,7 @@ function normalizeSnapshot(snap) {
     room: {
       ...snap.room,
       tasks: (snap.room.tasks ?? []).map(normalizeTask),
-      tasks_per_person: Number.isInteger(n) && n >= 1 ? n : 1,
+      tasks_per_person: Number.isInteger(n) && n >= 1 ? n : CONFIG.defaultTasksPerPerson,
       links: Array.isArray(snap.room.links)
         ? snap.room.links.filter((l) => l && typeof l.url === "string").map((l) => ({ label: typeof l.label === "string" ? l.label : "", url: l.url }))
         : CONFIG.sessionLinks
@@ -131,8 +136,8 @@ async function route() {
     state.formMode = "create";
     state.draftTasks = defaultTasks();  // every new room starts from the defaults
     state.draftOpen = false;
-    // New rooms start with one task per person and the configured links, both changeable here
-    ui.renderForm({ mode: "create", profile: loadProfile(), settings: { tasksPerPerson: 1, links: CONFIG.sessionLinks } });
+    // New rooms start with the default tasks per person (2) and the configured links, both changeable here
+    ui.renderForm({ mode: "create", profile: loadProfile(), settings: { tasksPerPerson: CONFIG.defaultTasksPerPerson, links: CONFIG.sessionLinks } });
     return renderDraft();
   }
 
@@ -243,6 +248,7 @@ function enterRoom(raw) {
 
 async function leaveRoom() {
   closeEditor();
+  closeExport();
   session += 1;
   refreshJob = null;
   refreshRunning = false;  // a loop from the old room exits on its own (session mismatch)
@@ -417,9 +423,15 @@ async function onSpin() {
       ...p,
       online: p.user_id === state.me || state.online.has(p.user_id)
     }));
-    const result = assignTasks(snap.room.tasks, participants, secureRandom, { tasksPerPerson: snap.room.tasks_per_person });
+    const perPerson = snap.room.tasks_per_person;
+    const result = assignTasks(snap.room.tasks, participants, secureRandom, { tasksPerPerson: perPerson });
     if (!result.ok) throw new Error(result.error);
-    const payload = result.assignments.map((a) => ({ task_id: a.task_id, task: a.task, owner_ids: ownerIds(a) }));
+    // full: nobody got it because everyone who could take it is at tasks per person (the database
+    // stores the matching reason; otherwise it says which Mac or phone was missing)
+    const payload = result.assignments.map((a) => ({
+      task_id: a.task_id, task: a.task, owner_ids: ownerIds(a),
+      full: a.owners.length === 0 && a.reason === fullReason(perPerson)
+    }));
     const next = await backend.commitSpin(snap.room.id, rule.spinNumber, payload);
     if (mySession !== session) return;
     state.busy = null;
@@ -996,6 +1008,143 @@ async function onCopyLink() {
   }
 }
 
+// ------------------------------------------------------------------ export for Confluence
+// Exports the spin on screen (the first one too, when it's shown), every task with its testers.
+
+let exportKey = null;
+
+function exportContent() {
+  const snap = state.snapshot;
+  if (!snap || state.stageSpin === 0) return null;
+  const finalShown = state.stageSpin === 2;
+  const showingFirst = finalShown && state.showFirst;
+  const spin = snap.spins.find((s) => s.spin_number === (showingFirst ? 1 : state.stageSpin));
+  if (!spin) return null;
+  const label = showingFirst ? "First spin (replaced)" : finalShown ? "Final result" : "Result";
+  const rows = exportRows(spin.assignments);
+  const assigned = spin.assignments.filter((a) => a.owners.length > 0).length;
+  const created = new Date(spin.created_at);
+  const when = Number.isNaN(created.getTime()) ? "" : created.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  const n = snap.room.tasks_per_person;
+  const meta = [
+    `${rows.length} ${rows.length === 1 ? "task" : "tasks"}, ${assigned} assigned`,
+    `up to ${n} ${n === 1 ? "task" : "tasks"} per person`,
+    when && `spun ${when}`
+  ].filter(Boolean).join(" · ");
+  const unassigned = new Set(spin.assignments.flatMap((a, i) => (a.owners.length ? [] : [i])));
+  return { code: snap.room.code, label, rows, unassigned, title: `WheelOfTest · Room ${snap.room.code} · ${label}`, meta };
+}
+
+function renderExport() {
+  if (!state.exportOpen) return;
+  const content = exportContent();
+  if (!content) return closeExport();
+  const key = JSON.stringify([state.exportFormat, content.rows, content.meta]);
+  if (key === exportKey) return;   // presence changes don't touch the export
+  exportKey = key;
+  ui.renderExport({
+    format: state.exportFormat, columns: EXPORT_COLUMNS, rows: content.rows,
+    markup: toWikiMarkup(content.rows), meta: content.meta, unassigned: content.unassigned
+  });
+}
+
+function openExport() {
+  if (!exportContent()) return;
+  state.exportOpen = true;
+  exportKey = null;
+  renderExport();
+  ui.openExportDialog();
+}
+
+function closeExport() {
+  state.exportOpen = false;
+  ui.closeExportDialog();
+}
+
+function onExportClosed() {
+  state.exportOpen = false;
+  exportKey = null;
+  const opener = ui.els.resultExport;
+  if (!opener.hidden && opener.offsetParent && (document.activeElement === document.body || !document.activeElement)) opener.focus();
+}
+
+/** Select a node's contents and copy them the old way (no Clipboard API, or it was refused). */
+function copySelection(node) {
+  const selection = getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const ok = document.execCommand("copy");
+  selection.removeAllRanges();
+  if (!ok) throw new Error("Copy was refused.");
+}
+
+/** The table as rich HTML (what Confluence turns into a table), with tab-separated text beside it. */
+async function copyTable(rows) {
+  const html = toHtmlTable(rows);
+  if (navigator.clipboard?.write && typeof ClipboardItem === "function") {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([toTsv(rows)], { type: "text/plain" })
+      })]);
+      return;
+    } catch { /* not allowed here: fall back to a selection */ }
+  }
+  // A plain, unstyled copy of the table inside the dialog (outside it the page is inert), so the
+  // page's dark theme colours don't travel with the paste
+  const holder = document.createElement("div");
+  holder.style.cssText = "position:fixed;left:-10000px;top:0;color:#000;background:#fff;font:14px sans-serif";
+  holder.innerHTML = html;   // built by toHtmlTable, every value escaped
+  ui.els.exportDialog.append(holder);
+  try { copySelection(holder); } finally { holder.remove(); }
+}
+
+async function copyMarkup(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    ui.els.exportMarkup.select();
+    if (!document.execCommand("copy")) throw new Error("Copy was refused.");
+  }
+}
+
+async function onExportCopy(event) {
+  event.preventDefault();
+  const content = exportContent();
+  if (!content) return;
+  const wiki = state.exportFormat === "wiki";
+  try {
+    if (wiki) await copyMarkup(toWikiMarkup(content.rows));
+    else await copyTable(content.rows);
+    const done = wiki
+      ? "Markup copied. In Confluence: Insert → Markup → Confluence wiki, then paste."
+      : "Table copied. Paste it into the Confluence page.";
+    ui.setExportStatus(done);
+    ui.announce(done);
+  } catch {
+    ui.setExportStatus("This browser didn't allow copying. Use Download, or select the preview and press Ctrl+C (⌘C on a Mac).", { error: true });
+  }
+}
+
+function onExportDownload() {
+  const content = exportContent();
+  if (!content) return;
+  const wiki = state.exportFormat === "wiki";
+  const name = exportFileName(content.code, content.label, wiki ? "txt" : "html");
+  const body = wiki ? toWikiDocument(content.rows, content) : toHtmlDocument(content.rows, content);
+  const url = URL.createObjectURL(new Blob([body], { type: wiki ? "text/plain;charset=utf-8" : "text/html;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  ui.els.exportDialog.append(link);   // inside the modal dialog, so the click isn't blocked
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  ui.setExportStatus(`Downloading ${name}.`);
+}
+
 // ------------------------------------------------------------------ wiring
 
 ui.els.form.addEventListener("submit", onFormSubmit);
@@ -1004,6 +1153,16 @@ ui.els.respinBtn.addEventListener("click", onSpin);
 ui.els.complainBtn.addEventListener("click", onComplain);
 ui.els.resultArea.addEventListener("click", onTakeoverClick);
 ui.els.copyLink.addEventListener("click", onCopyLink);
+ui.els.resultExport.addEventListener("click", openExport);
+ui.els.exportForm.addEventListener("submit", onExportCopy);
+ui.els.exportForm.addEventListener("change", () => {
+  state.exportFormat = ui.readExportFormat();
+  ui.setExportStatus(null);
+  renderExport();
+});
+ui.els.exportDownload.addEventListener("click", onExportDownload);
+ui.els.exportClose.addEventListener("click", closeExport);
+ui.els.exportDialog.addEventListener("close", onExportClosed);
 ui.els.mineOnly.addEventListener("change", () => { state.mineOnly = ui.els.mineOnly.checked; render(); });
 ui.els.showFirst.addEventListener("change", () => { state.showFirst = ui.els.showFirst.checked; render(); });
 

@@ -50,9 +50,11 @@
       </div>
 
       <form id="profile-form" class="form" novalidate>
-        <!-- On a wide screen the create form has two columns: you on the left, the room on the right -->
+        <!-- On a wide screen the create form has two columns: you on the left, the room on the right.
+             Each column has three sections, and each pair starts at the same height (styles.css). -->
         <div class="form-col form-col-you">
         <div class="field">
+          <h2 id="form-you-label" class="field-label form-you-label">About you</h2>
           <div class="text-field">
             <input id="name" name="name" type="text" placeholder=" " autocomplete="nickname" maxlength="40" required aria-describedby="name-error">
             <label for="name">Your name</label>
@@ -137,17 +139,20 @@
                 <button type="button" class="stepper-btn" data-step="-1" aria-label="Fewer tasks per person">
                   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 8h9"/></svg>
                 </button>
-                <input id="tasks-per-person" name="tasks_per_person" type="number" inputmode="numeric" min="1" max="10" step="1" value="1" aria-describedby="tasks-per-person-hint tasks-per-person-error">
+                <input id="tasks-per-person" name="tasks_per_person" type="number" inputmode="numeric" min="1" max="10" step="1" value="2" aria-describedby="tasks-per-person-hint tasks-per-person-error">
                 <button type="button" class="stepper-btn" data-step="1" aria-label="More tasks per person">
                   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
                 </button>
               </div>
             </div>
           </div>
-          <p id="tasks-per-person-hint" class="footnote settings-note">Everyone online gets at least this many tasks. When that needs more places than there are tasks, a task gets several testers.</p>
+          <p id="tasks-per-person-hint" class="footnote settings-note">The most tasks anyone gets from the spin: the first from their own team, the second cross-team. At most 2 testers per task.</p>
           <p id="tasks-per-person-error" class="field-error" hidden></p>
+        </section>
 
-          <h2 id="form-links-label" class="field-label links-label">Session links</h2>
+        <!-- Create mode only: session links -->
+        <section id="form-links-section" class="field form-links-section" aria-labelledby="form-links-label" hidden>
+          <h2 id="form-links-label" class="field-label">Session links</h2>
           <div id="form-links" class="group links-editor" role="group" aria-labelledby="form-links-label"></div>
           <p class="footnote settings-note">Shown at the top of the room for everyone, up to 4. They start as the default links; change, clear or add more.</p>
         </section>
@@ -209,6 +214,7 @@
                   <p id="result-settings" class="footnote result-settings" hidden></p>
                 </div>
                 <div class="toggles">
+                  <button type="button" id="result-export" class="btn btn-tinted btn-small" aria-haspopup="dialog">Export</button>
                   <button type="button" id="result-add" class="btn btn-tinted btn-small" data-action="add-task" hidden>Add task</button>
                   <label class="inline-switch">
                     <input type="checkbox" id="mine-only" role="switch">
@@ -264,7 +270,7 @@
                   <button type="button" class="stepper-btn" data-step="-1" aria-label="Fewer tasks per person">
                     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M3.5 8h9"/></svg>
                   </button>
-                  <input id="room-tasks-per-person" type="number" inputmode="numeric" min="1" max="10" step="1" value="1" aria-describedby="room-settings-hint">
+                  <input id="room-tasks-per-person" type="number" inputmode="numeric" min="1" max="10" step="1" value="2" aria-describedby="room-settings-hint">
                   <button type="button" class="stepper-btn" data-step="1" aria-label="More tasks per person">
                     <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 3.5v9M3.5 8h9"/></svg>
                   </button>
@@ -405,6 +411,34 @@
       <div class="sheet-actions">
         <button type="button" id="testers-cancel" class="btn btn-tinted">Cancel</button>
         <button type="submit" id="testers-save" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Export the spin on screen for Confluence: a rich table to paste, or wiki markup -->
+  <dialog id="export-dialog" class="sheet sheet-wide" aria-labelledby="export-title" aria-describedby="export-meta">
+    <form id="export-form" class="sheet-form" novalidate>
+      <div class="sheet-body">
+        <div>
+          <h2 id="export-title" class="title-3">Export for Confluence</h2>
+          <p id="export-meta" class="footnote export-meta"></p>
+        </div>
+        <fieldset class="field" aria-describedby="export-hint">
+          <legend>Format</legend>
+          <div class="chips">
+            <label class="chip"><input type="radio" name="export-format" value="table" checked><span>Table</span></label>
+            <label class="chip"><input type="radio" name="export-format" value="wiki"><span>Wiki markup</span></label>
+          </div>
+          <p id="export-hint" class="footnote"></p>
+        </fieldset>
+        <div id="export-preview" class="export-preview" tabindex="0" role="region" aria-label="Preview of the exported table"></div>
+        <textarea id="export-markup" class="export-markup" readonly spellcheck="false" aria-label="Confluence wiki markup" hidden></textarea>
+        <p id="export-status" class="footnote export-status" role="status"></p>
+      </div>
+      <div class="sheet-actions">
+        <button type="button" id="export-close" class="btn btn-tinted">Close</button>
+        <button type="button" id="export-download" class="btn btn-tinted">Download</button>
+        <button type="submit" id="export-copy" class="btn btn-primary">Copy table</button>
       </div>
     </form>
   </dialog>

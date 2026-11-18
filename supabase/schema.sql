@@ -11,7 +11,8 @@
 --
 -- Upgrading from an earlier version: just run this file again. It adds the
 -- takeover_requests table and its RPCs, the per-room settings (tasks per person, session
--- links), several testers per task and the moderator's post-spin task changes. Spins stored
+-- links), several testers per task, the moderator's post-spin task changes, and tasks per
+-- person as a maximum (default 2) with at most two testers per task from the spin. Spins stored
 -- before several testers per task (participant_id) are read in place and converted when
 -- they are next written. Existing rooms keep their stored
 -- tasks; the old task shape (platform/device) is still understood everywhere,
@@ -52,8 +53,10 @@ create table if not exists public.rooms (
   )
 );
 
--- Added with per-room settings. Existing rooms keep one task per person and no links.
-alter table public.rooms add column if not exists tasks_per_person smallint not null default 1;
+-- Added with per-room settings. Existing rooms keep their value and their links.
+alter table public.rooms add column if not exists tasks_per_person smallint not null default 2;
+-- Tasks per person became the most anyone gets from the spin (1 own team's + 1 cross-team): new rooms get 2.
+alter table public.rooms alter column tasks_per_person set default 2;
 alter table public.rooms add column if not exists links jsonb not null default '[]'::jsonb;
 do $$
 begin
@@ -308,6 +311,14 @@ returns text language sql immutable set search_path = '' as $$
     || '.'
 $$;
 
+-- Same text as fullReason() in domain.js: people could take the task, but everyone of them
+-- already has tasks-per-person tasks.
+create or replace function public._wot_full_reason(p_per_person integer)
+returns text language sql immutable set search_path = '' as $$
+  select format('Everyone online who can take it already has %s %s.', p_per_person,
+                case when p_per_person = 1 then 'task' else 'tasks' end)
+$$;
+
 -- Same rule as canReceiveTask() in domain.js and the device check in commit_spin: a Mac task
 -- needs a Mac, a phone task needs one of the selected phones, both need both.
 create or replace function public._wot_can_receive(p_task jsonb, p_mac boolean, p_android boolean, p_ios boolean)
@@ -322,21 +333,23 @@ $$;
 -- Settings and testers
 -- -----------------------------------------------------------------------------
 
--- How many testers a task can have when people add themselves with "Assign me"
--- (maxTestersToJoin in config.js). The moderator's own changes are not limited.
-create or replace function public.wot_max_testers_to_join()
+-- The most testers a task gets from the spin and from "Assign me" (maxTestersPerTask in
+-- config.js). The moderator's own changes are not limited.
+create or replace function public.wot_max_testers_per_task()
 returns integer language sql immutable set search_path = '' as $$ select 2 $$;
+drop function if exists public.wot_max_testers_to_join();  -- the same limit under its old name
 
 -- The most a moderator can ask for per person (maxTasksPerPerson in config.js).
 create or replace function public.wot_max_tasks_per_person()
 returns integer language sql immutable set search_path = '' as $$ select 10 $$;
 
--- Tasks per person: a whole number from 1 to wot_max_tasks_per_person().
+-- Tasks per person: the most tasks the spin gives anyone, a whole number from 1 to
+-- wot_max_tasks_per_person(). Left out: 2 (defaultTasksPerPerson in config.js).
 create or replace function public._wot_clean_tasks_per_person(p_value jsonb)
 returns smallint language plpgsql immutable set search_path = '' as $$
 begin
   if p_value is null or jsonb_typeof(p_value) = 'null' then
-    return 1;
+    return 2;
   end if;
   if jsonb_typeof(p_value) <> 'number'
      or (p_value #>> '{}')::numeric <> trunc((p_value #>> '{}')::numeric)
@@ -525,7 +538,7 @@ $$;
 -- -----------------------------------------------------------------------------
 -- Replaced by the version with p_settings (two overloads would make every call ambiguous).
 drop function if exists public.create_room(jsonb, jsonb);
--- p_settings: { tasks_per_person: 1-10 (default 1), links: [{ label, url }] (0-4) }
+-- p_settings: { tasks_per_person: 1-10 (default 2), links: [{ label, url }] (0-4) }
 create or replace function public.create_room(p_profile jsonb, p_tasks jsonb, p_settings jsonb default '{}'::jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -626,8 +639,10 @@ begin
   return public._wot_snapshot(v_room_id);
 end $$;
 
--- p_assignments: one { task_id, task, owner_ids: [user id, ...] } per task. A page from before
--- several testers per task sends participant_id instead; it is read as a one-person list.
+-- p_assignments: one { task_id, task, owner_ids: [user id, ...], full } per task. full = true on
+-- a task nobody got because everyone who could take it already has tasks-per-person tasks;
+-- otherwise an empty task must need a Mac or phone. A page from before several testers per task
+-- sends participant_id instead; it is read as a one-person list.
 create or replace function public.commit_spin(p_room_id uuid, p_spin_number integer, p_assignments jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -672,6 +687,7 @@ begin
        or jsonb_typeof(e -> 'task_id') is distinct from 'string'
        or coalesce(jsonb_typeof(e -> 'owner_ids'), 'array') <> 'array'
        or coalesce(jsonb_typeof(e -> 'participant_id'), 'null') not in ('string', 'null')
+       or coalesce(jsonb_typeof(e -> 'full'), 'null') not in ('boolean', 'null')
        or jsonb_array_length(coalesce(e -> 'owner_ids', '[]'::jsonb)) > public.wot_room_capacity()
        or exists (select 1 from jsonb_array_elements(coalesce(e -> 'owner_ids', '[]'::jsonb)) o
                   where jsonb_typeof(o) <> 'string')
@@ -681,6 +697,7 @@ begin
   select coalesce(jsonb_agg(jsonb_build_object(
            'task_id', e -> 'task_id',
            'task', e -> 'task',
+           'full', coalesce((e ->> 'full')::boolean, false),
            'owner_ids', case
              when jsonb_typeof(e -> 'owner_ids') = 'array' then e -> 'owner_ids'
              when nullif(e ->> 'participant_id', '') is not null then jsonb_build_array(e -> 'participant_id')
@@ -719,6 +736,25 @@ begin
     perform public._wot_fail('Each person can be on a task only once.', 'invalid_assignments', '22023');
   end if;
 
+  -- At most wot_max_testers_per_task() testers per task, at most tasks_per_person tasks per person
+  if exists (
+    select 1 from jsonb_array_elements(v_items) e
+    where jsonb_array_length(e -> 'owner_ids') > public.wot_max_testers_per_task()
+  ) then
+    perform public._wot_fail(
+      format('A task can get at most %s testers from the spin. Reload the page and spin again.', public.wot_max_testers_per_task()),
+      'invalid_assignments', '22023');
+  end if;
+  if exists (
+    select 1 from jsonb_array_elements(v_items) e, jsonb_array_elements_text(e -> 'owner_ids') o
+    group by o having count(*) > v_room.tasks_per_person
+  ) then
+    perform public._wot_fail(
+      format('The spin can give each person at most %s %s. Reload the page and spin again.', v_room.tasks_per_person,
+             case when v_room.tasks_per_person = 1 then 'task' else 'tasks' end),
+      'invalid_assignments', '22023');
+  end if;
+
   -- Every tester is a member of this room
   if exists (
     select 1 from jsonb_array_elements(v_items) e, jsonb_array_elements_text(e -> 'owner_ids') o
@@ -741,12 +777,13 @@ begin
     perform public._wot_fail('A task went to someone without the Mac or phone it needs.', 'invalid_assignments', '22023');
   end if;
 
-  -- Desktop-only tasks can always be assigned (the moderator is online), so they may not be left empty
+  -- Desktop-only tasks can always be assigned (the moderator is online), so they may be left empty
+  -- only when everyone is full
   if exists (
     select 1
     from jsonb_array_elements(v_items) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
-    where jsonb_array_length(e -> 'owner_ids') = 0
+    where jsonb_array_length(e -> 'owner_ids') = 0 and not (e ->> 'full')::boolean
       and cardinality(public._wot_task_phones(t)) = 0 and not public._wot_task_needs_mac(t)
   ) then
     perform public._wot_fail('Tasks that need no Mac or phone cannot be left unassigned.', 'invalid_assignments', '22023');
@@ -759,8 +796,9 @@ begin
            'owners', coalesce((
               select jsonb_agg(public._wot_owner(p_room_id, o.id::uuid, t.task) order by o.ord)
               from jsonb_array_elements_text(e -> 'owner_ids') with ordinality as o(id, ord)), '[]'::jsonb),
-           'reason', case when jsonb_array_length(e -> 'owner_ids') = 0
-                          then public._wot_unassigned_reason(public._wot_task_phones(t.task),
+           'reason', case when jsonb_array_length(e -> 'owner_ids') > 0 then null
+                          when (e ->> 'full')::boolean then public._wot_full_reason(v_room.tasks_per_person)
+                          else public._wot_unassigned_reason(public._wot_task_phones(t.task),
                                                              public._wot_task_needs_mac(t.task)) end
          ) order by t.ord)
   into v_stored
@@ -850,7 +888,8 @@ end $$;
 -- -----------------------------------------------------------------------------
 
 -- Change { tasks_per_person, links (0-4) } (either may be left out). Moderator only. Tasks per
--- person decides the spin, so it changes only before the first one; the links any time.
+-- person (the most anyone gets from the spin) decides the spin, so it changes only before the
+-- first one; the links any time.
 create or replace function public.update_settings(p_room_id uuid, p_settings jsonb)
 returns jsonb language plpgsql security definer set search_path = '' as $$
 declare
@@ -1282,7 +1321,8 @@ end $$;
 -- -----------------------------------------------------------------------------
 -- Assign me / Leave: a member adds themselves to a task of the current spin as an
 -- extra tester (nothing is taken from anyone, so no approval), while it has fewer
--- than wot_max_testers_to_join() testers; and leaves a task they joined themselves.
+-- than wot_max_testers_per_task() testers; and leaves a task they joined themselves.
+-- Tasks per person doesn't limit this: it only shapes the spin.
 -- -----------------------------------------------------------------------------
 create or replace function public.join_task(p_room_id uuid, p_spin_number integer, p_task_id text)
 returns jsonb language plpgsql security definer set search_path = '' as $$
@@ -1325,9 +1365,9 @@ begin
   if not public._wot_can_receive(v_entry -> 'task', v_me.mac, v_me.android, v_me.ios) then
     perform public._wot_fail('You do not have the Mac or phone this task needs.', 'device_mismatch');
   end if;
-  if jsonb_array_length(v_owners) >= public.wot_max_testers_to_join() then
+  if jsonb_array_length(v_owners) >= public.wot_max_testers_per_task() then
     perform public._wot_fail(
-      format('This task already has %s testers. Ask to take over a place instead.', public.wot_max_testers_to_join()),
+      format('This task already has %s testers. Ask to take over a place instead.', public.wot_max_testers_per_task()),
       'task_full');
   end if;
 
@@ -1433,7 +1473,7 @@ revoke all on function public.wot_room_capacity()               from public, ano
 revoke all on function public.wot_complaint_threshold()         from public, anon, authenticated;
 revoke all on function public.wot_max_pending_requests()        from public, anon, authenticated;
 revoke all on function public.wot_max_tasks_per_person()        from public, anon, authenticated;
-revoke all on function public.wot_max_testers_to_join()         from public, anon, authenticated;
+revoke all on function public.wot_max_testers_per_task()        from public, anon, authenticated;
 revoke all on function public._wot_clean_tasks_per_person(jsonb) from public, anon, authenticated;
 revoke all on function public._wot_clean_links(jsonb)           from public, anon, authenticated;
 revoke all on function public._wot_entry_owners(jsonb)          from public, anon, authenticated;
@@ -1450,6 +1490,7 @@ revoke all on function public._wot_is_string_list(jsonb, integer, integer, text[
 revoke all on function public._wot_task_phones(jsonb)           from public, anon, authenticated;
 revoke all on function public._wot_task_needs_mac(jsonb)        from public, anon, authenticated;
 revoke all on function public._wot_unassigned_reason(text[], boolean) from public, anon, authenticated;
+revoke all on function public._wot_full_reason(integer)          from public, anon, authenticated;
 revoke all on function public._wot_can_receive(jsonb, boolean, boolean, boolean) from public, anon, authenticated;
 revoke all on function public._wot_snapshot(uuid)               from public, anon, authenticated;
 

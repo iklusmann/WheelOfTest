@@ -266,7 +266,26 @@ main { max-width: 1320px; margin: 0 auto; padding: 36px var(--gutter) 88px; }
   .view-form.is-create .form > #form-error,
   .view-form.is-create .form > #form-submit { grid-column: 1 / -1; }
   .view-form.is-create .form > #form-submit { justify-self: center; max-width: 440px; }
+  /* Row by row, the two columns use controls of the same height: the name field and the task
+     summary (56px), the team picker and the tasks-per-person stepper (54px) */
+  .view-form.is-create .tasks-bar { min-height: 56px; }
+  .view-form.is-create .form-col-you .segment span { min-height: 48px; }
 }
+/* ...and each pair of sections starts at the same height: both columns share three rows. While
+   the task list is open the right column is far longer, so the columns flow on their own then
+   (the first row still lines up). */
+@supports (grid-template-rows: subgrid) {
+  @media (min-width: 960px) {
+    .view-form.is-create .form:not(:has(#form-tasks-body:not([hidden]))) > .form-col {
+      grid-row: 1 / span 3; grid-template-rows: subgrid;
+    }
+    .view-form.is-create .form > .form-col-you { grid-column: 1; }
+    .view-form.is-create .form > .form-col-room { grid-column: 2; }
+    .view-form.is-create .form-col > * { align-self: start; }
+  }
+}
+/* The "About you" label only pairs with the room column; the join form doesn't need it */
+.view-form:not(.is-create) .form-you-label { display: none; }
 .field { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .field > legend { padding: 0 4px; margin-bottom: 8px; font-size: 13px; color: var(--label-2); }
 
@@ -748,6 +767,29 @@ input:disabled + .switch { opacity: 0.5; }
   border-top: 1px solid var(--separator); background: var(--sheet-bg);
 }
 .sheet-actions .btn { min-width: 110px; }
+/* the export sheet: wide enough for a seven-column table */
+.sheet-wide { width: min(980px, calc(100% - 32px)); }
+.export-meta { margin-top: 4px; }
+.export-preview {
+  max-height: 46vh; overflow: auto; border-radius: var(--radius-control);
+  background: var(--surface); box-shadow: inset 0 0 0 1px var(--separator);
+}
+.export-preview:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+.export-preview table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.38; }
+.export-preview th, .export-preview td { padding: 7px 10px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--separator); }
+.export-preview th { position: sticky; top: 0; background: var(--surface); font-weight: 600; color: var(--label-2); white-space: nowrap; }
+.export-preview tr:last-child td { border-bottom: 0; }
+.export-preview td:last-child { font-weight: 500; }
+.export-preview td.is-unassigned { color: var(--label-2); font-weight: 400; font-style: italic; }
+.export-markup {
+  width: 100%; min-height: 260px; max-height: 46vh; resize: vertical; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-control);
+  background: var(--surface); color: var(--label);
+  font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto;
+}
+.export-status:empty { display: none; }
+.export-status { color: var(--green, var(--label-2)); }
+.export-status.is-error { color: var(--red); }
 /* dark: an elevated sheet (like iOS), with fields one step lighter */
 @media (prefers-color-scheme: dark) {
   .sheet { --sheet-bg: #1C1C1E; --surface: #2C2C2E; }
@@ -809,9 +851,8 @@ input:disabled + .switch { opacity: 0.5; }
 
 /* ------------------------------------------------------------------ settings */
 
-.form-settings { gap: 8px; }
+.form-settings, .form-links-section { gap: 8px; }
 .settings-note { padding: 0 4px; }
-.links-label { margin-top: 14px; }
 .stepper-row { min-height: 54px; }
 .stepper-row label { font-size: 17px; }
 .stepper { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: var(--fill); }

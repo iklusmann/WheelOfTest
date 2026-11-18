@@ -67,12 +67,15 @@ export const CONFIG = {
   // public.wot_max_pending_requests() in supabase/schema.sql.
   maxPendingRequests: 5,
 
-  // The most "tasks per person" a room can ask for. Keep equal to public.wot_max_tasks_per_person().
+  // Tasks per person is the most tasks the spin gives anyone (1 own team's, 1 cross-team by
+  // default). The highest a room can ask for: keep equal to public.wot_max_tasks_per_person().
+  // The default: keep equal to the column default of rooms.tasks_per_person.
   maxTasksPerPerson: 10,
+  defaultTasksPerPerson: 2,
 
-  // How many testers a task can have when people add themselves with "Assign me". Keep equal to
-  // public.wot_max_testers_to_join(). The moderator's own changes are not limited.
-  maxTestersToJoin: 2,
+  // The most testers a task gets from the spin and from "Assign me". Keep equal to
+  // public.wot_max_testers_per_task(). The moderator's own changes are not limited.
+  maxTestersPerTask: 2,
 
   // Session links per room (2 rows to start with, Add link up to this many). Keep equal to the
   // limit in public._wot_clean_links().
