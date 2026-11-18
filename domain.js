@@ -75,11 +75,13 @@ export function normalizeTask(task) {
       browsers = t.platform !== "mobile" && typeof t.device === "string" && t.device !== "mobile" ? [t.device] : [];
     }
   }
+  const team = typeof t.team === "string" ? t.team : null;
   return {
     id: String(t.id ?? ""),
     what: typeof t.what === "string" ? t.what : "",
     theme: typeof t.theme === "string" ? t.theme : "",
-    team: typeof t.team === "string" ? t.team : null,
+    team,
+    team_only: team !== null && t.team_only === true,   // only that team gets it from the spin
     devices,
     browsers,
     users: strings(t.users)
@@ -103,6 +105,14 @@ export function taskBrowsers(task) {
   const list = t.devices.includes("desktop") ? [...t.browsers] : [];
   if (t.devices.includes("mac") && !list.includes(MAC_BROWSER.value)) list.push(MAC_BROWSER.value);
   return list;
+}
+
+/** Whether only the task's own team gets it from the spin (anyone can still assign themselves after). */
+export const isTeamOnly = (task) => normalizeTask(task).team_only;
+
+/** Why a team-only task nobody got stays empty. Same text as public._wot_team_only_reason(). */
+export function teamOnlyReason(task) {
+  return `At the spin, no one from ${normalizeTask(task).team} online could take it.`;
 }
 
 /** Same text as public._wot_unassigned_reason() in schema.sql. */
@@ -150,6 +160,7 @@ export function validateTask(input, options = {}) {
     value: ok
       ? {
           what, theme, team, devices,
+          team_only: team !== null && input?.team_only === true,
           // Browsers belong to Desktop; without Desktop there is nothing to choose (Mac means Safari).
           browsers: devices.includes("desktop") ? pickOptions(input?.browsers, BROWSERS, keep?.browsers) : [],
           users: pickOptions(input?.users, USER_LEVELS, keep?.users)
@@ -218,6 +229,16 @@ export function canReceiveTask(task, participant) {
   if (taskNeedsMac(task) && !participant.mac) return false;
   const phones = taskPhones(task);
   return phones.length === 0 || phones.some((p) => Boolean(participant[p]));
+}
+
+/**
+ * Who the spin may give a task to: the device rule, and for a team-only task, members of its team.
+ * Assign me, takeovers and the moderator only need the devices (canReceiveTask).
+ */
+export function canSpinTo(task, participant) {
+  if (!canReceiveTask(task, participant)) return false;
+  const t = normalizeTask(task);
+  return !t.team_only || participant.team === t.team;
 }
 
 // ---------------------------------------------------------------- randomness
@@ -312,7 +333,7 @@ const perPersonOf = (value) => Math.max(1, Math.trunc(Number(value)) || 1);
 /** Why a task nobody got stays empty when people could take it. Same text as public._wot_full_reason(). */
 export function fullReason(tasksPerPerson) {
   const n = perPersonOf(tasksPerPerson);
-  return `Everyone online who can take it already has ${n} task${n === 1 ? "" : "s"}.`;
+  return `At the spin, everyone who could take it already had ${n} task${n === 1 ? "" : "s"}.`;
 }
 
 /** Whether a task is one of the person's own team's (all-teams tasks count as cross-team). */
@@ -320,6 +341,8 @@ export const isOwnTeamTask = (task, participant) => task.team != null && task.te
 
 /** How many of these tasks a participant has the devices for. */
 export const compatibleCount = (tasks, participant) => tasks.filter((t) => canReceiveTask(t, participant)).length;
+/** How many of these tasks the spin may give a participant (devices, and team-only tasks only to their team). */
+export const spinnableCount = (tasks, participant) => tasks.filter((t) => canSpinTo(t, participant)).length;
 
 // ---- a small min-cost flow with lexicographic costs
 // A cost is a vector compared component by component, so every component outweighs all the
@@ -409,8 +432,8 @@ class UnitFlow {
  * options.tasksPerPerson: the most tasks anyone gets (default CONFIG.defaultTasksPerPerson)
  * options.maxTesters: the most testers a task gets (default CONFIG.maxTestersPerTask)
  *
- * Hard rules: the device rule (canReceiveTask), nobody above tasksPerPerson, no task above
- * maxTesters, nobody twice on a task. Within them, in this order (an earlier rule always wins):
+ * Hard rules: the device rule and team-only tasks only to their team (canSpinTo), nobody above
+ * tasksPerPerson, no task above maxTesters, nobody twice on a task. Within them, in this order (an earlier rule always wins):
  *   1. as many people as possible get a task;
  *   2. as many tasks as possible are handed out, so everyone gets tasksPerPerson if the tasks allow;
  *   3. loads are even;
@@ -425,7 +448,8 @@ class UnitFlow {
  * Returns { ok: true, assignments } with one entry per task, in the order of `tasks`:
  * { task_id, task, owners: [{ user_id, name, team, mac, android, ios, team_match }], reason },
  * or { ok: false, error } when nobody is online. A task nobody got has a reason: the Mac or
- * phone nobody online has (unassignedReason), or that everyone who could take it is full (fullReason).
+ * phone nobody online has (unassignedReason), nobody of its team online for a team-only task
+ * (teamOnlyReason), or that everyone who could take it is full (fullReason).
  */
 export function assignTasks(tasks, participants, random, options = {}) {
   if (!Array.isArray(tasks) || !Array.isArray(participants)) throw new TypeError("tasks and participants must be arrays");
@@ -454,7 +478,7 @@ export function assignTasks(tasks, participants, random, options = {}) {
     for (let k = 1; k <= perPerson; k += 1) {
       g.add(S, nodeP(i), costOf([[FAIR, k === 1 ? -1 : 0], [COUNT, -1], [BALANCE, k]]));
     }
-    const able = order.filter(({ t }) => canReceiveTask(t, p));
+    const able = order.filter(({ t }) => canSpinTo(t, p));
     // With a single task each there is no cross-team slot: all-teams tasks are as good as their own
     const ownSlot = ({ t }) => isOwnTeamTask(t, p) || (perPerson === 1 && t.team == null);
     const own = able.filter(ownSlot);
@@ -480,7 +504,8 @@ export function assignTasks(tasks, participants, random, options = {}) {
       // Own team first, then in the order people joined
       const chosen = testers[j].sort((a, b) => Number(isOwnTeamTask(task, b)) - Number(isOwnTeamTask(task, a)) || rank.get(a.user_id) - rank.get(b.user_id));
       const reason = chosen.length ? null
-        : online.some((p) => canReceiveTask(task, p)) ? fullReason(perPerson) : unassignedReason(task);
+        : online.some((p) => canSpinTo(task, p)) ? fullReason(perPerson)
+        : isTeamOnly(task) ? teamOnlyReason(task) : unassignedReason(task);
       return { task_id: task.id, task: taskSnapshot(task), owners: chosen.map((p) => ownerOf(p, task)), reason };
     })
   };
@@ -490,11 +515,12 @@ export function assignTasks(tasks, participants, random, options = {}) {
  * What a spin would give the people online now, for the moderator's warning before spinning.
  * The counts are the same for every spin (assignTasks maximizes them); who exactly is short
  * may differ. Returns null when nobody is online, else
- * { perPerson, online, short: [{ participant, got, able, why: "devices" | "places" }], noDevice, full }:
- * short = people who get fewer than tasks per person, because they have the devices for only
- * `able` tasks ("devices") or every task they could take already has its testers ("places");
- * noDevice = tasks nobody online has the Mac or phone for; full = tasks left over because
- * everyone who could take them is at tasks per person.
+ * { perPerson, online, short: [{ participant, got, able, why: "devices" | "places" }], noDevice, noTeam, full }:
+ * short = people who get fewer than tasks per person, because the spin can give them only `able`
+ * tasks ("devices": their devices, and team-only tasks of other teams don't count) or every task
+ * they could take already has its testers ("places"); noDevice = tasks nobody online has the Mac
+ * or phone for; noTeam = team-only tasks nobody of the team online can take; full = tasks left
+ * over because everyone who could take them is at tasks per person.
  */
 export function spinPreview(tasks, participants, tasksPerPerson, options = {}) {
   const perPerson = perPersonOf(tasksPerPerson);
@@ -503,12 +529,14 @@ export function spinPreview(tasks, participants, tasksPerPerson, options = {}) {
   const online = participants.filter((p) => p && p.online === true);
   const short = online.map((p) => {
     const got = tasksOf(result.assignments, p.user_id).length;
-    const able = compatibleCount(tasks, p);
+    const able = spinnableCount(tasks, p);
     return { participant: p, got, able, why: got >= perPerson ? null : got >= able ? "devices" : "places" };
   }).filter((x) => x.why);
   const empty = result.assignments.filter((a) => a.owners.length === 0);
-  const noDevice = empty.filter((a) => !online.some((p) => canReceiveTask(a.task, p))).length;
-  return { perPerson, online: online.length, short, noDevice, full: empty.length - noDevice };
+  const nobody = empty.filter((a) => !online.some((p) => canSpinTo(a.task, p)));
+  const noTeam = nobody.filter((a) => isTeamOnly(a.task)).length;
+  const noDevice = nobody.length - noTeam;
+  return { perPerson, online: online.length, short, noDevice, noTeam, full: empty.length - nobody.length };
 }
 
 /**

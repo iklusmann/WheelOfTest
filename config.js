@@ -43,7 +43,9 @@ export const CONFIG = {
   supabaseUrl: ENV.SUPABASE_URL || "",
   supabasePublishableKey: ENV.SUPABASE_PUBLISHABLE_KEY || "",
 
-  teams: list(ENV.TEAM_OPTIONS).length ? list(ENV.TEAM_OPTIONS) : ["AF", "CYD", "PB"],
+  // The database accepts these four (public._wot_clean_profile). TEAM_OPTIONS may list fewer;
+  // keep UI/UX in it, or nobody can join as UI/UX and its Visual Regression tasks stay open.
+  teams: list(ENV.TEAM_OPTIONS).length ? list(ENV.TEAM_OPTIONS) : ["AF", "CYD", "PB", "UI/UX"],
   nameMaxLength: 40,
 
   // Links the team uses in every test session. Environment values override these defaults.

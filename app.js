@@ -155,7 +155,7 @@ async function route() {
       state.formMode = "join";
       state.code = code;
       document.title = `Join ${code} · WheelOfTest`;
-      return ui.renderForm({ mode: "join", code, profile: loadProfile() });
+      return ui.renderForm({ mode: "join", code, profile: loadProfile(), spun: snap.spun === true });
     }
     enterRoom(snap);
   } catch (error) {

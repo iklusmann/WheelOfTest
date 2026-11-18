@@ -64,11 +64,9 @@
 
         <fieldset class="field" aria-describedby="team-error">
           <legend>Team</legend>
-          <div class="segmented">
+          <!-- One segment per team in CONFIG.teams (ui.js fills it in) -->
+          <div id="team-segments" class="segmented">
             <span class="segmented-thumb" aria-hidden="true"></span>
-            <label class="segment"><input type="radio" name="team" value="AF"><span>AF</span></label>
-            <label class="segment"><input type="radio" name="team" value="CYD"><span>CYD</span></label>
-            <label class="segment"><input type="radio" name="team" value="PB"><span>PB</span></label>
           </div>
           <p id="team-error" class="field-error" hidden></p>
         </fieldset>
@@ -237,6 +235,7 @@
                 <ul id="takeovers-list" class="takeovers-list"></ul>
               </section>
               <p id="viewing-first" class="notice" hidden>This is the first spin. The second spin replaced it and is the final result.</p>
+              <p id="join-note" class="notice join-note" hidden></p>
               <div class="group result-group">
                 <table id="result-table" class="result-table" role="table">
                   <caption class="sr-only">Task assignments</caption>
@@ -333,6 +332,12 @@
         <fieldset class="field" aria-describedby="task-team-error">
           <legend>Team</legend>
           <div id="task-team-chips" class="chips"></div>
+          <label class="inline-switch team-only-switch">
+            <input type="checkbox" name="team_only" id="task-team-only" role="switch" aria-describedby="task-team-only-hint">
+            <span class="switch" aria-hidden="true"></span>
+            <span>Only this team gets it from the spin</span>
+          </label>
+          <p id="task-team-only-hint" class="footnote">After the spin, anyone can still assign themselves, and you can give it to anyone.</p>
           <p id="task-team-error" class="field-error" hidden></p>
         </fieldset>
 

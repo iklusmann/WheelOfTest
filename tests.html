@@ -30,7 +30,7 @@ import {
   normalizeTask, taskPhones, unassignedReason, validateTask, validateTaskList,
   newTaskId, sameTaskList, isDefaultTaskList, tasksEditable,
   taskNeedsMac, taskBrowsers, UNASSIGNED_NO_MAC,
-  withCriticalFlows, hasCriticalFlows, CRITICAL_FLOW_COUNT, spinPreview, compatibleCount, fullReason, isOwnTeamTask,
+  withCriticalFlows, hasCriticalFlows, CRITICAL_FLOW_COUNT, spinPreview, compatibleCount, fullReason, isOwnTeamTask, canSpinTo, isTeamOnly, teamOnlyReason, spinnableCount,
   normalizeAssignment, ownerIds, isOwner, tasksOf, suggestOwner, validateTasksPerPerson, validateLinks, canJoinTask, canLeaveTask,
   takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests, takeoverChanges
 } from "./domain.js";
@@ -58,12 +58,13 @@ function person(name, team, { mac = false, android = false, ios = false, online 
 const isMobile = (task) => taskPhones(task).length > 0;   // needs a phone
 const MOBILE = TASKS.filter(isMobile);
 const MAC = TASKS.filter((t) => taskNeedsMac(t));
-const DESKTOP = TASKS.filter((t) => !isMobile(t) && !taskNeedsMac(t));   // anyone can take these
+const DESKTOP = TASKS.filter((t) => !isMobile(t) && !taskNeedsMac(t) && !t.team_only);   // anyone can take these
+const VISUAL = TASKS.filter((t) => t.team_only);   // Visual Regression Check: the spin gives these only to UI/UX
 const ALL_DEVICES = { mac: true, android: true, ios: true };
 
 // Independent oracle: the most people that can get at least one task each (max flow / BFS
 // augmenting paths), optionally only over "preferred" edges (own team or all-teams tasks).
-function maxCover(tasks, people, edge = canReceiveTask) {
+function maxCover(tasks, people, edge = canSpinTo) {
   const adj = people.map((p) => tasks.map((t, j) => (edge(t, p) ? j : -1)).filter((j) => j >= 0));
   const owner = new Array(tasks.length).fill(-1);
   let size = 0;
@@ -105,13 +106,13 @@ function checkHardRules(r, tasks, roster, per, label) {
     equal(new Set(ownerIds(a)).size, a.owners.length, `${label}: nobody twice on ${a.task_id}`);
     for (const o of a.owners) {
       const p = people.get(o.user_id);
-      assert(canReceiveTask(a.task, p), `${label}: device rule on ${a.task_id}`);
+      assert(canSpinTo(a.task, p), `${label}: device or team-only rule on ${a.task_id}`);
       equal(o.team_match, a.task.team == null ? null : p.team === a.task.team, `${label}: team_match on ${a.task_id}`);
       equal(o.name, p.name, "tester snapshot");
     }
     if (a.owners.length > 0) { equal(a.reason, null, `${label}: no reason with testers`); continue; }
-    const able = online.filter((p) => canReceiveTask(a.task, p));
-    if (able.length === 0) equal(a.reason, unassignedReason(a.task), `${label}: device reason on ${a.task_id}`);
+    const able = online.filter((p) => canSpinTo(a.task, p));
+    if (able.length === 0) equal(a.reason, isTeamOnly(a.task) ? teamOnlyReason(a.task) : unassignedReason(a.task), `${label}: reason on ${a.task_id}`);
     else {
       equal(a.reason, fullReason(per), `${label}: full reason on ${a.task_id}`);
       assert(able.every((p) => count.get(p.user_id) === per), `${label}: ${a.task_id} empty while someone who can take it has room`);
@@ -136,12 +137,12 @@ function deepFreeze(value) {
   return value;
 }
 function randomRoster(random) {
-  const teams = ["AF", "CYD", "PB"];
+  const teams = ["AF", "CYD", "PB", "UI/UX"];
   const size = 1 + Math.floor(random() * 9);
   const roster = [];
   for (let i = 0; i < size; i += 1) {
     const device = Math.floor(random() * 4); // 0 none, 1 android, 2 ios, 3 both
-    roster.push(person(`p${i}`, teams[Math.floor(random() * 3)], {
+    roster.push(person(`p${i}`, teams[Math.floor(random() * 4)], {
       android: device === 1 || device === 3,
       ios: device === 2 || device === 3,
       mac: random() < 0.3,
@@ -152,28 +153,33 @@ function randomRoster(random) {
 }
 
 // ---------------------------------------------------------------- task data
-test("tasks.js has the 32 default tasks: one per release, theme and device, no duplicates", () => {
-  equal(TASKS.length, 32, "task count");
-  equal(new Set(TASKS.map((t) => t.id)).size, 32, "unique ids");
+test("tasks.js has the 34 default tasks: one per release, theme and device, plus Visual Regression Check for UI/UX", () => {
+  equal(TASKS.length, 34, "task count");
+  equal(new Set(TASKS.map((t) => t.id)).size, 34, "unique ids");
   const values = (options) => options.map((o) => o.value);
   for (const t of TASKS) {
     assert(t.devices.length > 0 && t.devices.every((d) => values(DEVICES).includes(d)), `devices of ${t.id}`);
     assert(values(THEMES).includes(t.theme), `theme of ${t.id}`);
-    assert(t.team === null || ["AF", "CYD", "PB"].includes(t.team), `team of ${t.id}`);
+    assert(t.team === null || ["AF", "CYD", "PB", "UI/UX"].includes(t.team), `team of ${t.id}`);
     equal(t.users, values(USER_LEVELS), `${t.id}: every user level`);
     equal(validateTask(t).ok, true, `${t.id} passes the editor's validation`);
     equal(t.devices.length, 1, `${t.id}: one device per task`);
+    equal(t.team_only, t.team === "UI/UX", `${t.id}: only the UI/UX tasks are team-only`);
   }
   const keys = TASKS.map((t) => `${t.what}|${t.theme}|${t.team}|${t.devices}`);
-  equal(new Set(keys).size, 32, "no two defaults differ only by browser or user level");
+  equal(new Set(keys).size, 34, "no two defaults differ only by browser or user level");
   for (const what of ["Critical User Flows", "AF Release", "PB Release", "CD Release"]) {
     for (const theme of ["e3dc", "flow"]) {
       const devices = TASKS.filter((t) => t.what === what && t.theme === theme).map((t) => t.devices[0]);
       equal(devices, ["desktop", "mac", "android", "ios"], `${what} ${theme}: every device once`);
     }
   }
+  equal(VISUAL.map((t) => [t.id, t.what, t.theme, t.team, t.devices, t.browsers]), [
+    ["vr-e3dc-desktop", "Visual Regression Check", "e3dc", "UI/UX", ["desktop"], values(BROWSERS)],
+    ["vr-flow-desktop", "Visual Regression Check", "flow", "UI/UX", ["desktop"], values(BROWSERS)]
+  ], "Visual Regression Check: E3DC and Flow, Desktop, UI/UX only");
   equal(TASKS.filter((t) => t.what === "CD Release").every((t) => t.team === "CYD"), true, "CD Release belongs to CYD");
-  equal([DESKTOP.length, MAC.length, MOBILE.length], [8, 8, 16], "desktop / mac / phone task counts");
+  equal([DESKTOP.length, MAC.length, MOBILE.length, VISUAL.length], [8, 8, 16, 2], "desktop / mac / phone / team-only task counts");
   assert(MOBILE.every((t) => t.browsers.length === 0 && taskBrowsers(t).length === 0), "phone tasks: no browser");
   assert(MAC.every((t) => JSON.stringify(taskBrowsers(t)) === '["safari"]'), "Mac tasks: Safari");
   assert(DESKTOP.every((t) => JSON.stringify(t.devices) === '["desktop"]' && JSON.stringify(t.browsers) === JSON.stringify(values(BROWSERS))), "desktop = every browser");
@@ -196,10 +202,11 @@ test("the defaults are frozen and defaultTasks() hands out independent copies", 
 });
 
 test("sameTaskList compares fields and order, not key order or legacy shape", () => {
-  const reordered = TASKS.map((t) => ({ users: t.users, browsers: t.browsers, devices: t.devices, team: t.team, theme: t.theme, what: t.what, id: t.id }));
+  const reordered = TASKS.map((t) => ({ users: t.users, browsers: t.browsers, devices: t.devices, team_only: t.team_only, team: t.team, theme: t.theme, what: t.what, id: t.id }));
   equal(sameTaskList(reordered, TASKS), true, "key order ignored");
   equal(sameTaskList([...TASKS].reverse(), TASKS), false, "order matters");
   equal(sameTaskList(TASKS.slice(1), TASKS), false, "length matters");
+  equal(sameTaskList(TASKS.map((t) => ({ ...t, team_only: false })), TASKS), false, "team-only matters");
 });
 
 // ---------------------------------------------------------------- legacy rooms
@@ -236,7 +243,9 @@ test("normalizeTask converts the original 22 legacy tasks: mobile → Android + 
   }
   equal(normalizeTask(TASKS[3]), JSON.parse(JSON.stringify(TASKS[3])), "current shape passes through");
   equal(normalizeTask({ id: "x", what: "W", theme: "flow", team: "AF", devices: ["ios"], browsers: ["safari"], users: [], extra: 1 }),
-    { id: "x", what: "W", theme: "flow", team: "AF", devices: ["ios"], browsers: ["safari"], users: [] }, "unknown fields dropped");
+    { id: "x", what: "W", theme: "flow", team: "AF", team_only: false, devices: ["ios"], browsers: ["safari"], users: [] }, "unknown fields dropped");
+  equal(normalizeTask({ id: "y", team: null, team_only: true, devices: ["desktop"] }).team_only, false, "team-only needs a team");
+  equal(normalizeTask({ id: "z", team: "UI/UX", team_only: "yes", devices: ["desktop"] }).team_only, false, "team-only is a strict boolean");
 });
 
 test("legacy tasks assign exactly like their converted form (old rooms behave as before)", () => {
@@ -370,7 +379,7 @@ test("validateTask: options are deduplicated, unknown values dropped, kept in op
     what: "T", team: "AF", theme: "e3dc",
     devices: ["ios", "desktop", "ios", "tablet"], browsers: ["safari", "firefox", "chrome", "opera"], users: ["service", "owner", 3]
   });
-  equal(r.value, { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "ios"], browsers: ["chrome", "firefox"], users: ["owner", "service"] }, "clean; Safari is not an option");
+  equal(r.value, { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "ios"], team_only: false, browsers: ["chrome", "firefox"], users: ["owner", "service"] }, "clean; Safari is not an option");
   equal(validateTask({ what: "T", team: "AF", theme: "e3dc", devices: ["android"] }).value.browsers, [], "browsers optional");
 });
 
@@ -379,7 +388,7 @@ test("validateTask: browsers only apply to Desktop; Mac is a device", () => {
   equal(validateTask({ ...base, devices: ["mac"] }).value.browsers, [], "Mac only: browsers dropped (Safari is implied)");
   equal(validateTask({ ...base, devices: ["android", "ios"] }).value.browsers, [], "phones only: browsers dropped");
   equal(validateTask({ ...base, devices: ["mac", "desktop"] }).value,
-    { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "mac"], browsers: ["chrome", "edge"], users: [] }, "Desktop + Mac keeps the Desktop browsers");
+    { what: "T", theme: "e3dc", team: "AF", devices: ["desktop", "mac"], team_only: false, browsers: ["chrome", "edge"], users: [] }, "Desktop + Mac keeps the Desktop browsers");
 });
 
 test("validateProfile: Mac is a strict boolean like the phones; Desktop is implied", () => {
@@ -392,7 +401,7 @@ test("validateTask keep: values the task already had survive an edit, new unknow
   const input = { what: "T2", team: "QA", theme: "neon", devices: ["desktop"], browsers: ["chrome", "opera", "brave"], users: ["admin", "owner"] };
   equal(validateTask(input).ok, false, "without keep: unknown team/theme rejected");
   const r = validateTask(input, { keep: original });
-  equal(r.value, { what: "T2", theme: "neon", team: "QA", devices: ["desktop"], browsers: ["chrome", "opera"], users: ["owner", "admin"] }, "kept, 'brave' dropped");
+  equal(r.value, { what: "T2", theme: "neon", team: "QA", devices: ["desktop"], team_only: false, browsers: ["chrome", "opera"], users: ["owner", "admin"] }, "kept, 'brave' dropped");
   equal(validateTask({ ...input, team: "Other" }, { keep: original }).ok, false, "a different unknown team is still rejected");
 });
 
@@ -427,16 +436,16 @@ test("Critical User Flows: off removes the whole block (edited ones too), on res
   equal(CRITICAL_FLOW_COUNT, 8, "8 Critical User Flows tasks in the defaults");
   equal(hasCriticalFlows(all), true, "on by default");
   const off = withCriticalFlows(all, false);
-  equal(off.length, 24, "32 - 8");
+  equal(off.length, 26, "34 - 8");
   assert(!off.some((t) => t.what === "Critical User Flows"), "none left");
   equal(hasCriticalFlows(off), false, "off");
   const on = withCriticalFlows(off, true);
   equal(isDefaultTaskList(on), true, "turning it back on restores exactly the default list");
   const edited = all.map((t) => (t.id === "cuf-flow-mac" ? { ...t, what: "Renamed flow" } : t));
-  equal(withCriticalFlows(edited, false).length, 24, "an edited Critical User Flows task is still part of the block");
+  equal(withCriticalFlows(edited, false).length, 26, "an edited Critical User Flows task is still part of the block");
   assert(withCriticalFlows(all, true) === all, "already on: unchanged");
   const custom = [...off, { id: "task-x", what: "Critical User Flows", theme: "e3dc", team: null, devices: ["desktop"], browsers: [], users: [] }];
-  equal(withCriticalFlows(custom, false).length, 25, "a custom task that only shares the name is not part of the block");
+  equal(withCriticalFlows(custom, false).length, 27, "a custom task that only shares the name is not part of the block");
   equal(hasCriticalFlows(LEGACY), true, "old rooms: the legacy cuf- tasks count too");
   equal(withCriticalFlows(LEGACY, false).length, 18, "old rooms: 22 - 4");
 });
@@ -477,12 +486,14 @@ test("Android, iOS and Mac owners get exactly the tasks for the devices they hav
   for (const devices of [{ android: true }, { ios: true }, { android: true, ios: true }, { mac: true }, ALL_DEVICES]) {
     const p = person("Owner", "AF", devices);
     const r = assignTasks(TASKS, [p], seededRandom(3), { tasksPerPerson: TASKS.length });
-    const can = TASKS.filter((t) => canReceiveTask(t, p));
+    const can = TASKS.filter((t) => canSpinTo(t, p));
     equal(assignedTo(r, p.user_id).map((a) => a.task_id), can.map((t) => t.id), `alone with ${JSON.stringify(devices)}: every task they can take`);
-    assert(r.assignments.filter((a) => holderId(a) === null).every((a) => !canReceiveTask(a.task, p)), "the rest is what they can't take");
+    assert(r.assignments.filter((a) => holderId(a) === null).every((a) => !canSpinTo(a.task, p)), "the rest is what they can't take");
   }
-  equal(TASKS.filter((t) => canReceiveTask(t, person("X", "AF", { android: true }))).length, 16, "Android owner: desktop + android = 16");
-  equal(TASKS.filter((t) => canReceiveTask(t, person("X", "AF", ALL_DEVICES))).length, 32, "owner of everything: all 32");
+  equal(spinnableCount(TASKS, person("X", "AF", { android: true })), 16, "Android owner: desktop + android = 16 (not the UI/UX tasks)");
+  equal(spinnableCount(TASKS, person("X", "AF", ALL_DEVICES)), 32, "owner of everything: all 32 but the UI/UX tasks");
+  equal(spinnableCount(TASKS, person("X", "UI/UX", ALL_DEVICES)), 34, "a UI/UX member: all 34");
+  equal(compatibleCount(TASKS, person("X", "AF")), 10, "devices alone: Desktop-only can take all 10 Desktop tasks after the spin");
 });
 
 // ---------------------------------------------------------------- online
@@ -576,12 +587,13 @@ test("tasks nobody online has the devices for, or nobody has room for, are Unass
   const r = assignTasks(TASKS, [desk1, desk2, offline], seededRandom(9), { tasksPerPerson: 2 });
   equal(r.ok, true, "spin succeeds");
   const byReason = (reason) => r.assignments.filter((a) => holderId(a) === null && a.reason === reason).length;
-  equal(r.assignments.filter((a) => holderId(a) === null && !DESKTOP.some((t) => t.id === a.task_id)).length, MOBILE.length + MAC.length, "every Mac and phone task unassigned");
+  equal(r.assignments.filter((a) => holderId(a) === null && !DESKTOP.some((t) => t.id === a.task_id) && !a.task.team_only).length, MOBILE.length + MAC.length, "every Mac and phone task unassigned");
+  equal(r.assignments.filter((a) => a.task.team_only).map((a) => [a.owners.length, a.reason]), VISUAL.map(() => [0, "At the spin, no one from UI/UX online could take it."]), "no UI/UX member online: the Visual Regression tasks stay open");
   equal(byReason(UNASSIGNED_NO_MAC) + byReason("No one online has an Android phone.") + byReason("No one online has an iOS phone."), MOBILE.length + MAC.length, "with a device reason");
   equal(r.assignments.filter((a) => DESKTOP.some((t) => t.id === a.task_id) && a.owners.length).length, 4, "4 Desktop tasks: 2 people × 2");
   equal(byReason(fullReason(2)), DESKTOP.length - 4, "the other Desktop tasks: everyone is full");
-  equal(fullReason(2), "Everyone online who can take it already has 2 tasks.", "text (same as the database)");
-  equal(fullReason(1), "Everyone online who can take it already has 1 task.", "singular");
+  equal(fullReason(2), "At the spin, everyone who could take it already had 2 tasks.", "text (same as the database)");
+  equal(fullReason(1), "At the spin, everyone who could take it already had 1 task.", "singular");
 });
 
 // ---------------------------------------------------------------- completeness
@@ -600,7 +612,7 @@ test("every task appears exactly once in the result, in task order", () => {
 test("tasks per person is a maximum: 4 people with every device get exactly N each, up to what fits", () => {
   for (const per of [1, 2, 3, 10]) {
     for (let seed = 1; seed <= 20; seed += 1) {
-      const roster = [1, 2, 3, 4].map((i) => person(`S${i}`, ["AF", "CYD", "PB", "AF"][i - 1], ALL_DEVICES));
+      const roster = [1, 2, 3, 4].map((i) => person(`S${i}`, ["AF", "CYD", "PB", "UI/UX"][i - 1], ALL_DEVICES));
       const r = assignTasks(TASKS, roster, seededRandom(seed), { tasksPerPerson: per });
       equal([...loads(r, roster).values()], [per, per, per, per], `${per} per person, seed ${seed}`);
       equal(r.assignments.filter((a) => a.owners.length > 0).length, Math.min(4 * per, TASKS.length), "a second tester only once every task has one");
@@ -695,7 +707,7 @@ test("as many people as possible get a task, and spinPreview predicts every spin
     equal(withTask(r, roster).length, maxCover(slots(tasks), roster), `seed ${seed}: as many people as possible get one`);
     const preview = spinPreview(tasks, roster, per);
     equal(preview.short.length, roster.filter((p) => count.get(p.user_id) < per).length, `seed ${seed}: people short`);
-    equal(preview.full + preview.noDevice, r.assignments.filter((a) => a.owners.length === 0).length, `seed ${seed}: tasks unassigned`);
+    equal(preview.full + preview.noDevice + preview.noTeam, r.assignments.filter((a) => a.owners.length === 0).length, `seed ${seed}: tasks unassigned`);
     for (const x of preview.short) {
       if (x.why === "devices") assert(x.able < per && x.got === x.able, `seed ${seed}: ${x.participant.name} short by devices`);
       else assert(x.got < Math.min(per, x.able), `seed ${seed}: ${x.participant.name} short by places`);
@@ -754,7 +766,7 @@ test("more people than places: 2 testers per task at most, everyone who fits get
   }
   const preview = spinPreview(TASKS, roster, 2);
   equal([preview.short.length, preview.short.every((x) => x.why === "places" && x.got === 1)], [4, true], "4 people get 1: no places left");
-  equal([preview.noDevice, preview.full], [MOBILE.length + MAC.length, 0], "the Mac and phone tasks need devices nobody has");
+  equal([preview.noDevice, preview.noTeam, preview.full], [MOBILE.length + MAC.length, VISUAL.length, 0], "the Mac and phone tasks need devices nobody has; nobody is UI/UX");
   const ten = Array.from({ length: 20 }, (_, i) => person(`E${i}`, "AF"));
   equal(withTask(assignTasks(DESKTOP, ten, seededRandom(1), { tasksPerPerson: 1 }), ten).length, 16, "20 people, 16 places: 16 get one");
   const phoneOnly = [task("p", ["ios"])];
@@ -772,7 +784,7 @@ test("tasks per person: nobody above it; anyone below it has every task they cou
     const count = checkHardRules(r, tasks, roster, n, `seed ${seed}`);
     for (const p of roster) {
       if (count.get(p.user_id) >= n) continue;
-      const open = r.assignments.filter((a) => canReceiveTask(a.task, p) && !isOwner(a, p.user_id) && a.owners.length < 2);
+      const open = r.assignments.filter((a) => canSpinTo(a.task, p) && !isOwner(a, p.user_id) && a.owners.length < 2);
       equal(open.map((a) => a.task_id), [], `seed ${seed}: ${p.name} has ${count.get(p.user_id)} < ${n} while a task has room`);
     }
   }
@@ -824,13 +836,16 @@ test("the assignment is optimal: a brute-force search over 250 small rooms finds
   const all = ["desktop", "mac", "android", "ios"];
   for (let seed = 1; seed <= 250; seed += 1) {
     const random = seededRandom(seed * 13);
-    const tasks = Array.from({ length: 1 + Math.floor(random() * 5) }, (_, j) => task(`t${j}`, [all[Math.floor(random() * 4)]], [null, "AF", "CYD", "PB"][Math.floor(random() * 4)]));
-    const people = Array.from({ length: 1 + Math.floor(random() * 4) }, (_, i) => person(`B${i}`, ["AF", "CYD", "PB"][Math.floor(random() * 3)], { mac: random() < 0.4, android: random() < 0.4, ios: random() < 0.4 }));
+    const tasks = Array.from({ length: 1 + Math.floor(random() * 5) }, (_, j) => {
+      const t = task(`t${j}`, [all[Math.floor(random() * 4)]], [null, "AF", "CYD", "PB", "UI/UX"][Math.floor(random() * 5)]);
+      return { ...t, team_only: t.team !== null && random() < 0.3 };
+    });
+    const people = Array.from({ length: 1 + Math.floor(random() * 4) }, (_, i) => person(`B${i}`, ["AF", "CYD", "PB", "UI/UX"][Math.floor(random() * 4)], { mac: random() < 0.4, android: random() < 0.4, ios: random() < 0.4 }));
     const per = 1 + Math.floor(random() * 3);
     const got = objective(assignTasks(tasks, people, random, { tasksPerPerson: per }), people, per);
     // every way to give each person up to `per` tasks they can take, at most 2 per task
     const choices = people.map((p) => {
-      const able = tasks.map((_, j) => j).filter((j) => canReceiveTask(tasks[j], p));
+      const able = tasks.map((_, j) => j).filter((j) => canSpinTo(tasks[j], p));
       const subsets = [];
       for (let m = 0; m < 1 << able.length; m += 1) { const sub = able.filter((_, b) => m & (1 << b)); if (sub.length <= per) subsets.push(sub); }
       return subsets;
@@ -908,7 +923,7 @@ test("property check over 500 random rosters: hard rules, and two of one kind on
       if (own + cross < 2 || (own === 1 && cross === 1)) continue;
       // two own-team tasks: every cross-team task they could take was full, and the other way round
       const wantOwn = own === 0;
-      const open = r.assignments.filter((a) => canReceiveTask(a.task, p) && isOwnTeamTask(a.task, p) === wantOwn && a.owners.length < 2);
+      const open = r.assignments.filter((a) => canSpinTo(a.task, p) && isOwnTeamTask(a.task, p) === wantOwn && a.owners.length < 2);
       equal(open.map((a) => a.task_id), [], `seed ${seed}: ${p.name} has ${own} own + ${cross} cross while one of the other kind had room`);
     }
   }
@@ -930,9 +945,9 @@ test("profile validation: name is required, trimmed and 1–40 characters", () =
   equal(validateProfile({ ...base, name: "Ada\u0007" }).ok, false, "control character");
 });
 
-test("profile validation: team must be exactly AF, CYD or PB", () => {
-  for (const team of ["AF", "CYD", "PB"]) equal(validateProfile({ name: "Ada", team }).ok, true, team);
-  for (const team of ["af", "CD", "XX", "", null, undefined, 1]) {
+test("profile validation: team must be exactly AF, CYD, PB or UI/UX", () => {
+  for (const team of ["AF", "CYD", "PB", "UI/UX"]) equal(validateProfile({ name: "Ada", team }).ok, true, team);
+  for (const team of ["af", "CD", "XX", "UIUX", "ui/ux", "", null, undefined, 1]) {
     const r = validateProfile({ name: "Ada", team });
     equal(r.ok, false, `team ${JSON.stringify(team)}`);
     assert(r.errors.team, "team error message");
@@ -1070,6 +1085,53 @@ test("requestFor finds my request for a task in any status; pendingRequests keep
   equal(pendingRequests(null), [], "no list");
 });
 
+// ---------------------------------------------------------------- team-only tasks and late joiners
+test("Visual Regression Check: the spin gives it only to UI/UX; after the spin anyone can assign themselves", () => {
+  const ux = person("Uma", "UI/UX"), af = person("Ana", "AF"), pb = person("Pia", "PB", ALL_DEVICES);
+  for (let seed = 1; seed <= 100; seed += 1) {
+    const r = assignTasks(TASKS, [ux, af, pb], seededRandom(seed), { tasksPerPerson: 2 });
+    checkHardRules(r, TASKS, [ux, af, pb], 2, `seed ${seed}`);
+    const vr = r.assignments.filter((a) => a.task.team_only);
+    assert(vr.every((a) => a.owners.every((o) => o.team === "UI/UX")), `seed ${seed}: only UI/UX on Visual Regression`);
+    // One UI/UX member: one Visual Regression task (own team) and one cross-team task; the other stays open
+    equal([ownOf(r, ux).length, crossOf(r, ux).length], [1, 1], `seed ${seed}: Uma's mix`);
+    equal(vr.map((a) => a.owners.length).sort(), [0, 1], `seed ${seed}: one Visual Regression task each way`);
+    equal(vr.find((a) => !a.owners.length).reason, fullReason(2), "the other one: Uma is full");
+  }
+  const vrTask = normalizeAssignment({ task_id: "vr-e3dc-desktop", task: VISUAL[0], owners: [{ user_id: ux.user_id, name: "Uma", team: "UI/UX" }] });
+  equal([canSpinTo(VISUAL[0], af), canReceiveTask(VISUAL[0], af)], [false, true], "Ana: not from the spin, but she has the devices");
+  equal(canJoinTask(vrTask, af, 2), true, "after the spin Ana can assign herself (1 tester so far)");
+  equal(canJoinTask({ ...vrTask, owners: [...vrTask.owners, { user_id: pb.user_id }] }, af, 2), false, "not with 2 testers already");
+  equal(canRequestTakeover(vrTask, af), true, "and can ask to take over Uma's place");
+  // Nobody from UI/UX online: both stay open, and the preview says so
+  const r = assignTasks(TASKS, [af, pb], seededRandom(1), { tasksPerPerson: 2 });
+  equal(r.assignments.filter((a) => a.task.team_only).map((a) => a.reason), ["At the spin, no one from UI/UX online could take it.", "At the spin, no one from UI/UX online could take it."], "team reason");
+  equal(teamOnlyReason(VISUAL[0]), "At the spin, no one from UI/UX online could take it.", "same text as the database");
+  equal(spinPreview(TASKS, [af, pb], 2).noTeam, 2, "preview: 2 team-only tasks nobody can take");
+  // Three UI/UX members: both covered (two share one), all by UI/UX
+  const uxs = [1, 2, 3].map((i) => person(`U${i}`, "UI/UX"));
+  const r3 = assignTasks(TASKS, [...uxs, af], seededRandom(4), { tasksPerPerson: 2 });
+  equal(r3.assignments.filter((a) => a.task.team_only).map((a) => a.owners.length).sort(), [1, 2], "3 UI/UX members on 2 tasks");
+});
+
+test("validateTask: team-only needs a team and is kept on edit", () => {
+  const base = { what: "VR", theme: "e3dc", devices: ["desktop"] };
+  equal(validateTask({ ...base, team: "UI/UX", team_only: true }).value.team_only, true, "UI/UX only");
+  equal(validateTask({ ...base, team: "", team_only: true }).value.team_only, false, "all teams: never team-only");
+  equal(validateTask({ ...base, team: "AF", team_only: "true" }).value.team_only, false, "strict boolean");
+  equal(validateTask({ ...base, team: "AF" }).value.team_only, false, "off by default");
+});
+
+test("late joiners: someone who joins after the spin has no task and can assign themselves", () => {
+  const early = [person("Ana", "AF"), person("Bo", "PB")];
+  const r = assignTasks(TASKS, early, seededRandom(8), { tasksPerPerson: 2 });
+  const late = person("Lee", "CYD");
+  equal(assignedTo(r, late.user_id).length, 0, "nothing from the spin");
+  const joinable = r.assignments.filter((a) => canJoinTask(a, late, 2));
+  assert(joinable.length > 0 && joinable.every((a) => canReceiveTask(a.task, late) && a.owners.length < 2), "tasks with a free place they have the devices for");
+  assert(joinable.some((a) => a.task.team_only), "the Visual Regression tasks too");
+});
+
 // ---------------------------------------------------------------- export for Confluence
 test("exportRows: one row per task with readable labels; testers with their team, or why nobody has it", () => {
   const rows = exportRows([
@@ -1081,6 +1143,7 @@ test("exportRows: one row per task with readable labels; testers with their team
   equal(rows[1], ["Critical User Flows", "Flow", "All teams", "Mac", "Safari", "Owner, Installer, Partner, Service", `Unassigned – ${UNASSIGNED_NO_MAC}`], "unassigned");
   equal(rows[2][3], "Android, iOS", "an old room's mobile task");
   equal(rows[2][6], "Cy (CYD)", "an old spin's single tester");
+  equal(exportRows([{ task_id: "v", task: VISUAL[1], owners: [{ user_id: "4", name: "Uma", team: "UI/UX" }] }])[0].slice(0, 3), ["Visual Regression Check", "Flow", "UI/UX"], "Visual Regression row");
   assert(rows.every((r) => r.length === EXPORT_COLUMNS.length), "every row has every column");
   equal(exportRows(null), [], "nothing to export");
 });

@@ -44,6 +44,7 @@
   --team-af: #3634A3;  --team-af-tint: #E8E7F9;
   --team-cyd: #00708A; --team-cyd-tint: #DEF2F6;
   --team-pb: #A33F00;  --team-pb-tint: #FFECD1;
+  --team-uiux: #A3166F; --team-uiux-tint: #FBE4F1;
 
   /* wheel: Apple system colors around the hue circle */
   --c0: #FF3B30; --c1: #FF9500; --c2: #FFCC00; --c3: #34C759; --c4: #00C7BE; --c5: #30B0C7;
@@ -110,6 +111,7 @@
     --team-af: #9F9DFF;  --team-af-tint: #2E2E56;
     --team-cyd: #70E0F5; --team-cyd-tint: #244249;
     --team-pb: #FFB340;  --team-pb-tint: #4E391A;
+    --team-uiux: #FF8AD0; --team-uiux-tint: #4D2140;
 
     --c0: #FF453A; --c1: #FF9F0A; --c2: #FFD60A; --c3: #30D158; --c4: #63E6E2; --c5: #40C8E0;
     --c6: #64D2FF; --c7: #0A84FF; --c8: #5E5CE6; --c9: #BF5AF2; --c10: #FF375F;
@@ -317,19 +319,23 @@ main { max-width: 1320px; margin: 0 auto; padding: 36px var(--gutter) 88px; }
 
 /* segmented control with a sliding accent thumb */
 .segmented {
-  position: relative; display: grid; grid-template-columns: repeat(3, 1fr);
+  position: relative; display: grid; grid-template-columns: repeat(var(--segments, 3), minmax(0, 1fr));
   padding: 3px; border-radius: 12px; background: var(--fill);
 }
 .segmented-thumb {
-  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3);
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / var(--segments, 3));
   border-radius: 9px; background: var(--accent);
   box-shadow: 0 3px 8px rgba(0, 113, 227, 0.28), 0 1px 1px rgba(0, 0, 0, 0.06);
   opacity: 0; transform: scale(0.92);
   transition: transform 0.45s var(--ease-snappy), opacity 0.2s ease;
 }
 .segmented:has(input:checked) .segmented-thumb { opacity: 1; transform: translateX(0); }
-.segmented:has(input[value="CYD"]:checked) .segmented-thumb { transform: translateX(100%); }
-.segmented:has(input[value="PB"]:checked) .segmented-thumb { transform: translateX(200%); }
+/* by position, so any number of teams works (ui.js sets --segments) */
+.segmented:has(.segment:nth-of-type(2) input:checked) .segmented-thumb { transform: translateX(100%); }
+.segmented:has(.segment:nth-of-type(3) input:checked) .segmented-thumb { transform: translateX(200%); }
+.segmented:has(.segment:nth-of-type(4) input:checked) .segmented-thumb { transform: translateX(300%); }
+.segmented:has(.segment:nth-of-type(5) input:checked) .segmented-thumb { transform: translateX(400%); }
+.segmented:has(.segment:nth-of-type(6) input:checked) .segmented-thumb { transform: translateX(500%); }
 .segment { position: relative; z-index: 1; cursor: pointer; }
 .segment input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .segment span {
@@ -618,6 +624,7 @@ input:disabled + .switch { opacity: 0.5; }
 .avatar[data-team="AF"] { background: var(--team-af-tint); color: var(--team-af); }
 .avatar[data-team="CYD"] { background: var(--team-cyd-tint); color: var(--team-cyd); }
 .avatar[data-team="PB"] { background: var(--team-pb-tint); color: var(--team-pb); }
+.avatar[data-team="UI/UX"] { background: var(--team-uiux-tint); color: var(--team-uiux); }
 .person:not(.is-online) .avatar { opacity: 0.55; }
 .person-top { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
 .person-name { font-size: 17px; font-weight: 500; overflow-wrap: anywhere; margin-right: 2px; }
@@ -626,6 +633,11 @@ input:disabled + .switch { opacity: 0.5; }
 .team-badge[data-team="AF"] { background: var(--team-af-tint); color: var(--team-af); }
 .team-badge[data-team="CYD"] { background: var(--team-cyd-tint); color: var(--team-cyd); }
 .team-badge[data-team="PB"] { background: var(--team-pb-tint); color: var(--team-pb); }
+.team-badge[data-team="UI/UX"] { background: var(--team-uiux-tint); color: var(--team-uiux); }
+/* "UI/UX only": the spin gives the task only to that team */
+.team-only { font-size: 12px; font-weight: 500; color: var(--label-2); }
+.team-only-switch { justify-self: start; margin-top: 4px; font-size: 15px; }
+.join-note { background: var(--accent-fill); color: var(--label); }
 .devices { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; }
 .device { display: inline-flex; align-items: center; gap: 4px; }
 .device .icon { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }

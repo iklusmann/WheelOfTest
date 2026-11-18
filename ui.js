@@ -5,7 +5,7 @@ import { DEVICES, BROWSERS, MAC_BROWSER, USER_LEVELS, THEMES } from "./tasks.js"
 import {
   spinRule, tasksEditable, isDefaultTaskList, taskBrowsers,
   hasCriticalFlows, isCriticalFlow, CRITICAL_FLOW_COUNT,
-  spinPreview, takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests,
+  spinPreview, isTeamOnly, takeoversOpen, canRequestTakeover, canResolveTakeover, requestFor, pendingRequests,
   canReceiveTask, isOwner, tasksOf, canJoinTask, canLeaveTask
 } from "./domain.js";
 import { drawWheel } from "./reveal.js";
@@ -16,7 +16,7 @@ export const els = {
   roomMeta: $("room-meta"), roomCode: $("room-code"), copyLink: $("copy-link"),
   connection: $("connection"), connectionText: $("connection-text"),
   viewMessage: $("view-message"), messageTitle: $("message-title"), messageBody: $("message-body"), messageLink: $("message-link"),
-  viewForm: $("view-form"), formTitle: $("form-title"), formLede: $("form-lede"), form: $("profile-form"),
+  viewForm: $("view-form"), formTitle: $("form-title"), formLede: $("form-lede"), form: $("profile-form"), teamSegments: $("team-segments"),
   name: $("name"), nameError: $("name-error"), teamError: $("team-error"),
   formError: $("form-error"), formSubmit: $("form-submit"),
   viewRoom: $("view-room"), roomHeading: $("room-heading"), roomAlert: $("room-alert"),
@@ -25,7 +25,8 @@ export const els = {
   formSettings: $("form-settings"), formLinksSection: $("form-links-section"), formColRoom: $("form-col-room"), tasksPerPerson: $("tasks-per-person"), tasksPerPersonError: $("tasks-per-person-error"), formLinks: $("form-links"),
   roomSettings: $("room-settings"), roomStepper: $("room-stepper"), roomTasksPerPerson: $("room-tasks-per-person"),
   roomTasksPerPersonValue: $("room-tasks-per-person-value"), roomSettingsHint: $("room-settings-hint"),
-  resultAdd: $("result-add"), resultSettings: $("result-settings"), resultExport: $("result-export"),
+  resultAdd: $("result-add"), resultSettings: $("result-settings"), resultExport: $("result-export"), joinNote: $("join-note"),
+  taskTeamOnly: $("task-team-only"),
   exportDialog: $("export-dialog"), exportForm: $("export-form"), exportMeta: $("export-meta"), exportHint: $("export-hint"),
   exportPreview: $("export-preview"), exportMarkup: $("export-markup"), exportStatus: $("export-status"),
   exportClose: $("export-close"), exportDownload: $("export-download"), exportCopy: $("export-copy"),
@@ -170,10 +171,27 @@ export function renderNotFound(code) {
 
 // ------------------------------------------------------------------ form
 
-export function renderForm({ mode, code = null, profile = null, settings = null }) {
+/** The team picker: one segment per team in CONFIG.teams (the database accepts AF, CYD, PB and UI/UX). */
+function buildTeamSegments() {
+  const segments = CONFIG.teams.map((team) => {
+    const label = el("label", "segment");
+    const input = document.createElement("input");
+    Object.assign(input, { type: "radio", name: "team", value: team });
+    label.append(input, el("span", null, team));
+    return label;
+  });
+  els.teamSegments.style.setProperty("--segments", String(Math.max(1, segments.length)));
+  els.teamSegments.querySelectorAll(".segment").forEach((s) => s.remove());
+  els.teamSegments.append(...segments);
+}
+buildTeamSegments();
+
+export function renderForm({ mode, code = null, profile = null, settings = null, spun = false }) {
   if (mode === "join") {
     els.formTitle.textContent = `Join room ${code}`;
-    els.formLede.textContent = "Tell the team who you are and what you can test on. The moderator spins once everyone is in.";
+    els.formLede.textContent = spun
+      ? "The wheel has already spun. Join anyway: you can assign yourself tasks that still have a free place."
+      : "Tell the team who you are and what you can test on. The moderator spins once everyone is in.";
     els.formSubmit.textContent = "Join room";
   } else {
     els.formTitle.textContent = "WheelOfTest";
@@ -460,7 +478,7 @@ function renderTaskList(container, tasks, { editable, busy }) {
 
   const groups = [];
   for (const t of tasks) {
-    const k = JSON.stringify([t.what, t.theme, t.team, t.users]);
+    const k = JSON.stringify([t.what, t.theme, t.team, t.team_only, t.users]);
     const last = groups[groups.length - 1];
     if (last && last.key === k) last.items.push(t);
     else groups.push({ key: k, items: [t] });
@@ -474,11 +492,16 @@ function renderTaskList(container, tasks, { editable, busy }) {
       const badge = el("span", "team-badge", t.team);
       badge.dataset.team = t.team;
       head.append(badge);
+      if (t.team_only) {
+        const only = el("span", "team-only", `${t.team} only`);
+        only.title = `The spin gives this only to ${t.team}. After the spin, anyone can assign themselves.`;
+        head.append(only);
+      }
     } else {
       head.append(el("span", "group-any", "All teams"));
     }
     if (t.users.length) head.append(el("span", "group-users", labelsIn(USER_LEVELS, t.users).join(", ")));
-    head.setAttribute("aria-label", `${t.what}, ${labelIn(THEMES, t.theme)}, ${t.team ? `team ${t.team}` : "all teams"}, ${plural(items.length, "task")}`);
+    head.setAttribute("aria-label", `${t.what}, ${labelIn(THEMES, t.theme)}, ${t.team ? `team ${t.team}${t.team_only ? " only" : ""}` : "all teams"}, ${plural(items.length, "task")}`);
     const list = el("ul", "group task-rows");
     list.append(...items.map((x) => taskRow(x, { editable, busy, lastOne: tasks.length === 1 })));
     section.append(head, list);
@@ -689,9 +712,11 @@ export function openTaskEditor({ task, isNew, testers = null }) {
   form.elements.what.value = task.what;
   for (const input of form.querySelectorAll("input[type=radio], input[type=checkbox]")) {
     if (input.name === "owners") continue;   // the testers were set when their chips were built
+    if (input.name === "team_only") continue;
     const value = input.name === "team" ? task.team ?? "" : task[input.name];
     input.checked = Array.isArray(value) ? value.includes(input.value) : value === input.value;
   }
+  els.taskTeamOnly.checked = isTeamOnly(task);
   syncTaskForm({ fillBrowsers: false });
   setTaskFormErrors({}, { focus: false });
   setTaskFormError(null);
@@ -730,6 +755,10 @@ export function syncTaskForm({ fillBrowsers = true } = {}) {
     for (const input of browsers) if (BROWSERS.some((o) => o.value === input.value)) input.checked = true;
   }
   syncSelectAll();
+  // Team only needs a team: off and disabled for All teams
+  const allTeams = (els.taskForm.querySelector('input[name="team"]:checked')?.value ?? "") === "";
+  els.taskTeamOnly.disabled = allTeams;
+  if (allTeams) els.taskTeamOnly.checked = false;
   // A control in a fieldset's first <legend> isn't disabled with the fieldset, so do it here.
   els.taskForm.querySelector('[data-select-all="browsers"]').disabled = !on;
   if (editorTesters) {
@@ -759,6 +788,7 @@ export function readTaskForm() {
   return {
     what: form.elements.what.value,
     team: checked("team")[0] ?? "",
+    team_only: els.taskTeamOnly.checked,
     theme: checked("theme")[0] ?? null,
     devices: checked("devices"),
     browsers: checked("browsers"),
@@ -1160,6 +1190,10 @@ function coverageWarning(state) {
   if (preview.full) {
     lines.push(`${plural(preview.full, "task")} will stay unassigned: everyone online who can take ${preview.full === 1 ? "it" : "them"} already has ${wanted}. Raise Tasks per person, or wait for more people.`);
   }
+  if (preview.noTeam) {
+    const only = [...new Set(room.tasks.filter((t) => t.team_only).map((t) => t.team))];
+    lines.push(`${plural(preview.noTeam, "task")} ${preview.noTeam === 1 ? "is" : "are"} only for ${listNames(only)} in the spin, and no one from there online can take ${preview.noTeam === 1 ? "it" : "them"}. Anyone can assign themselves after the spin.`);
+  }
   if (preview.noDevice) {
     lines.push(`${plural(preview.noDevice, "task")} need${preview.noDevice === 1 ? "s" : ""} a Mac or phone nobody online has.`);
   }
@@ -1241,6 +1275,15 @@ export function renderResult(state) {
     : `Assign me adds you to a task (up to ${CONFIG.maxTestersPerTask} testers). Take over asks for someone's place.`;
   els.resultSettings.hidden = !open;
   els.resultSettings.textContent = `The spin gave everyone up to ${plural(snap.room.tasks_per_person, "task")}.`;
+  // Nobody gave me a task (I joined late, or the spin had none for me): say how to get one
+  const late = Boolean(ctx.meRow?.joined_at && spin.created_at && new Date(ctx.meRow.joined_at) > new Date(spin.created_at));
+  const noteShown = open && !isHost && mine.length === 0;
+  const joinable = spin.assignments.some((a) => canJoinTask(a, ctx.meRow));
+  els.joinNote.hidden = !noteShown;
+  els.joinNote.textContent = !noteShown ? ""
+    : `${late ? "You joined after the spin." : "The spin had no task for you."} ${joinable
+      ? `Pick tasks with Assign me: any task with fewer than ${CONFIG.maxTestersPerTask} testers.`
+      : `Every task you can take already has ${CONFIG.maxTestersPerTask} testers. Ask to take over a place, or ask the moderator.`}`;
   els.resultAdd.hidden = !(open && isHost);
   const full = snap.room.tasks.length >= CONFIG.maxTasks;
   els.resultAdd.disabled = !ctx.canEdit || full;

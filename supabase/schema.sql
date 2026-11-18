@@ -12,7 +12,8 @@
 -- Upgrading from an earlier version: just run this file again. It adds the
 -- takeover_requests table and its RPCs, the per-room settings (tasks per person, session
 -- links), several testers per task, the moderator's post-spin task changes, and tasks per
--- person as a maximum (default 2) with at most two testers per task from the spin. Spins stored
+-- person as a maximum (default 2) with at most two testers per task from the spin, the UI/UX
+-- team and team-only tasks (the spin gives them only to that team). Spins stored
 -- before several testers per task (participant_id) are read in place and converted when
 -- they are next written. Existing rooms keep their stored
 -- tasks; the old task shape (platform/device) is still understood everywhere,
@@ -75,7 +76,7 @@ create table if not exists public.participants (
   room_id   uuid        not null references public.rooms (id) on delete cascade,
   user_id   uuid        not null references auth.users (id) on delete cascade,
   name      text        not null check (char_length(name) between 1 and 40 and name !~ '^\s|\s$'),
-  team      text        not null check (team in ('AF', 'CYD', 'PB')),
+  team      text        not null,
   mac       boolean     not null default false,
   android   boolean     not null default false,
   ios       boolean     not null default false,
@@ -84,6 +85,9 @@ create table if not exists public.participants (
 );
 -- Added with Mac support; existing rows get false. (Everyone has Desktop, so it isn't stored.)
 alter table public.participants add column if not exists mac boolean not null default false;
+-- The teams (UI/UX added later): keep equal to _wot_clean_profile() and _wot_clean_tasks()
+alter table public.participants drop constraint if exists participants_team_check;
+alter table public.participants add constraint participants_team_check check (team in ('AF', 'CYD', 'PB', 'UI/UX'));
 
 create table if not exists public.spins (
   id          uuid        primary key default gen_random_uuid(),
@@ -185,8 +189,8 @@ begin
     perform public._wot_fail('Name contains characters that are not allowed.', 'invalid_profile', '22023');
   end if;
   v_team := p_profile ->> 'team';
-  if jsonb_typeof(p_profile -> 'team') is distinct from 'string' or v_team not in ('AF', 'CYD', 'PB') then
-    perform public._wot_fail('Team must be AF, CYD or PB.', 'invalid_profile', '22023');
+  if jsonb_typeof(p_profile -> 'team') is distinct from 'string' or v_team not in ('AF', 'CYD', 'PB', 'UI/UX') then
+    perform public._wot_fail('Team must be AF, CYD, PB or UI/UX.', 'invalid_profile', '22023');
   end if;
   if coalesce(jsonb_typeof(p_profile -> 'mac'), 'boolean') <> 'boolean'
      or coalesce(jsonb_typeof(p_profile -> 'android'), 'boolean') <> 'boolean'
@@ -225,7 +229,8 @@ begin
 end $$;
 
 -- A room's task list (1-50 tasks). Shape of one task:
---   { id, what, theme, team: 'AF'|'CYD'|'PB'|null, devices: ['desktop'|'mac'|'android'|'ios', ...] (1+),
+--   { id, what, theme, team: 'AF'|'CYD'|'PB'|'UI/UX'|null, team_only: boolean (only with a team; the
+--     spin gives the task only to that team), devices: ['desktop'|'mac'|'android'|'ios', ...] (1+),
 --     browsers: [text] (0-10, for Desktop; Mac means Safari), users: [text] (0-10) }
 -- Keep the limits equal to maxTasks and taskNameMaxLength in config.js.
 create or replace function public._wot_clean_tasks(p_tasks jsonb)
@@ -250,7 +255,8 @@ begin
        or jsonb_typeof(v_task -> 'theme') is distinct from 'string'
        or char_length(v_task ->> 'theme') not between 1 and 40
        or coalesce(jsonb_typeof(v_task -> 'team'), 'null') not in ('null', 'string')
-       or (v_task ->> 'team') not in ('AF', 'CYD', 'PB')
+       or (v_task ->> 'team') not in ('AF', 'CYD', 'PB', 'UI/UX')
+       or coalesce(jsonb_typeof(v_task -> 'team_only'), 'null') not in ('null', 'boolean')
        or not public._wot_is_string_list(v_task -> 'devices', 1, 4, array['desktop', 'mac', 'android', 'ios'])
        or not public._wot_is_string_list(coalesce(v_task -> 'browsers', '[]'::jsonb), 0, 10)
        or not public._wot_is_string_list(coalesce(v_task -> 'users', '[]'::jsonb), 0, 10)
@@ -268,6 +274,7 @@ begin
     v_out := v_out || jsonb_build_array(jsonb_build_object(
       'id', v_task -> 'id', 'what', to_jsonb(v_what), 'theme', v_task -> 'theme',
       'team', coalesce(v_task -> 'team', 'null'::jsonb),
+      'team_only', coalesce((v_task ->> 'team_only')::boolean, false) and (v_task ->> 'team') is not null,
       'devices', v_task -> 'devices',
       'browsers', coalesce(v_task -> 'browsers', '[]'::jsonb),
       'users', coalesce(v_task -> 'users', '[]'::jsonb)));
@@ -315,8 +322,20 @@ $$;
 -- already has tasks-per-person tasks.
 create or replace function public._wot_full_reason(p_per_person integer)
 returns text language sql immutable set search_path = '' as $$
-  select format('Everyone online who can take it already has %s %s.', p_per_person,
+  select format('At the spin, everyone who could take it already had %s %s.', p_per_person,
                 case when p_per_person = 1 then 'task' else 'tasks' end)
+$$;
+
+-- Whether only the task's team gets it from the spin (tasks from before this never are).
+create or replace function public._wot_task_team_only(p_task jsonb)
+returns boolean language sql immutable set search_path = '' as $$
+  select coalesce((p_task ->> 'team_only')::boolean, false) and (p_task ->> 'team') is not null
+$$;
+
+-- Same text as teamOnlyReason() in domain.js: a team-only task nobody of its team online can take.
+create or replace function public._wot_team_only_reason(p_team text)
+returns text language sql immutable set search_path = '' as $$
+  select format('At the spin, no one from %s online could take it.', p_team)
 $$;
 
 -- Same rule as canReceiveTask() in domain.js and the device check in commit_spin: a Mac task
@@ -634,7 +653,9 @@ begin
     return jsonb_build_object('exists', false, 'member', false);
   end if;
   if not exists (select 1 from public.participants where room_id = v_room_id and user_id = v_uid) then
-    return jsonb_build_object('exists', true, 'member', false);
+    -- Whether the wheel has spun, so someone joining late knows they can still pick tasks
+    return jsonb_build_object('exists', true, 'member', false,
+      'spun', (select spins_used > 0 from public.rooms where id = v_room_id));
   end if;
   return public._wot_snapshot(v_room_id);
 end $$;
@@ -723,6 +744,7 @@ begin
     where public._wot_task_phones(e -> 'task') is distinct from public._wot_task_phones(t)
        or public._wot_task_needs_mac(e -> 'task') is distinct from public._wot_task_needs_mac(t)
        or (e -> 'task' ->> 'team') is distinct from (t ->> 'team')
+       or public._wot_task_team_only(e -> 'task') is distinct from public._wot_task_team_only(t)
   ) then
     perform public._wot_fail('The task list changed. The room has been refreshed, so spin again.', 'stale_spin');
   end if;
@@ -755,6 +777,18 @@ begin
       'invalid_assignments', '22023');
   end if;
 
+  -- A team-only task goes only to members of its team (after the spin, anyone may join it)
+  if exists (
+    select 1
+    from jsonb_array_elements(v_items) e
+    join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
+    cross join lateral jsonb_array_elements_text(e -> 'owner_ids') o
+    join public.participants p on p.room_id = p_room_id and p.user_id::text = o
+    where public._wot_task_team_only(t) and p.team is distinct from (t ->> 'team')
+  ) then
+    perform public._wot_fail('A team-only task went to someone from another team. Reload the page and spin again.', 'invalid_assignments', '22023');
+  end if;
+
   -- Every tester is a member of this room
   if exists (
     select 1 from jsonb_array_elements(v_items) e, jsonb_array_elements_text(e -> 'owner_ids') o
@@ -784,6 +818,7 @@ begin
     from jsonb_array_elements(v_items) e
     join jsonb_array_elements(v_room.tasks) t on (t ->> 'id') = (e ->> 'task_id')
     where jsonb_array_length(e -> 'owner_ids') = 0 and not (e ->> 'full')::boolean
+      and not public._wot_task_team_only(t)
       and cardinality(public._wot_task_phones(t)) = 0 and not public._wot_task_needs_mac(t)
   ) then
     perform public._wot_fail('Tasks that need no Mac or phone cannot be left unassigned.', 'invalid_assignments', '22023');
@@ -798,6 +833,7 @@ begin
               from jsonb_array_elements_text(e -> 'owner_ids') with ordinality as o(id, ord)), '[]'::jsonb),
            'reason', case when jsonb_array_length(e -> 'owner_ids') > 0 then null
                           when (e ->> 'full')::boolean then public._wot_full_reason(v_room.tasks_per_person)
+                          when public._wot_task_team_only(t.task) then public._wot_team_only_reason(t.task ->> 'team')
                           else public._wot_unassigned_reason(public._wot_task_phones(t.task),
                                                              public._wot_task_needs_mac(t.task)) end
          ) order by t.ord)
@@ -1491,6 +1527,8 @@ revoke all on function public._wot_task_phones(jsonb)           from public, ano
 revoke all on function public._wot_task_needs_mac(jsonb)        from public, anon, authenticated;
 revoke all on function public._wot_unassigned_reason(text[], boolean) from public, anon, authenticated;
 revoke all on function public._wot_full_reason(integer)          from public, anon, authenticated;
+revoke all on function public._wot_task_team_only(jsonb)         from public, anon, authenticated;
+revoke all on function public._wot_team_only_reason(text)        from public, anon, authenticated;
 revoke all on function public._wot_can_receive(jsonb, boolean, boolean, boolean) from public, anon, authenticated;
 revoke all on function public._wot_snapshot(uuid)               from public, anon, authenticated;
 

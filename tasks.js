@@ -13,6 +13,8 @@
 //   what      the task name
 //   theme     one of THEMES
 //   team      one team, or null for all teams
+//   team_only true: the spin gives it only to members of `team` (after the spin anyone can
+//             still assign themselves, and the moderator can give it to anyone). Default false.
 //   devices   one or more of DEVICES. Mac, Android and iOS decide who can take the task
 //             (see canReceiveTask in domain.js). Desktop can go to anyone.
 //   browsers  any of BROWSERS; they apply to Desktop. Mac is always tested in Safari
@@ -58,21 +60,39 @@ const RELEASES = [
   { prefix: "pb", what: "PB Release", team: "PB" },
   { prefix: "cyd", what: "CD Release", team: "CYD" }
 ];
-const TASKS = RELEASES.flatMap(({ prefix, what, team }) =>
+const RELEASE_TASKS = RELEASES.flatMap(({ prefix, what, team }) =>
   THEMES.flatMap(({ value: theme }) =>
     DEVICES.map(({ value: device }) => ({
       id: `${prefix}-${theme}-${device}`,
       what,
       theme,
       team,
+      team_only: false,
       devices: [device],
       browsers: device === "desktop" ? ALL_BROWSERS : [],
       users: ALL_USERS
     }))));
 
+// Visual regression, one per theme, on Desktop: the spin gives these only to UI/UX
+const VISUAL_TASKS = THEMES.map(({ value: theme }) => ({
+  id: `vr-${theme}-desktop`,
+  what: "Visual Regression Check",
+  theme,
+  team: "UI/UX",
+  team_only: true,
+  devices: ["desktop"],
+  browsers: ALL_BROWSERS,
+  users: ALL_USERS
+}));
+
+const TASKS = [...RELEASE_TASKS, ...VISUAL_TASKS];
+
 const copyTask = (t) => ({ ...t, devices: [...t.devices], browsers: [...t.browsers], users: [...t.users] });
 
-/** The 32 default tasks (4 releases × 2 themes × 4 devices), deep-frozen so nothing can change them by accident. */
+/**
+ * The 34 default tasks: 4 releases × 2 themes × 4 devices, plus Visual Regression Check per theme
+ * (UI/UX only). Deep-frozen so nothing can change them by accident.
+ */
 export const DEFAULT_TASKS = Object.freeze(TASKS.map((t) => {
   const c = copyTask(t);
   Object.freeze(c.devices); Object.freeze(c.browsers); Object.freeze(c.users);
