@@ -39,13 +39,17 @@ const DEFAULT_SESSION_LINKS = [
   "Release Changelog | https://docs.e3dc.com/spaces/CLOUD/pages/98239113/Changelog"
 ];
 
+const DEFAULT_TEAMS = ["AF", "CYD", "PB", "UI/UX"];
+const configuredTeams = list(ENV.TEAM_OPTIONS);
+const teams = [...new Set(configuredTeams.length ? [...configuredTeams, "UI/UX"] : DEFAULT_TEAMS)];
+
 export const CONFIG = {
   supabaseUrl: ENV.SUPABASE_URL || "",
   supabasePublishableKey: ENV.SUPABASE_PUBLISHABLE_KEY || "",
 
-  // The database accepts these four (public._wot_clean_profile). TEAM_OPTIONS may list fewer;
-  // keep UI/UX in it, or nobody can join as UI/UX and its Visual Regression tasks stay open.
-  teams: list(ENV.TEAM_OPTIONS).length ? list(ENV.TEAM_OPTIONS) : ["AF", "CYD", "PB", "UI/UX"],
+  // UI/UX is required by the Visual Regression tasks, so an older TEAM_OPTIONS value
+  // must not accidentally hide it from the join form.
+  teams,
   nameMaxLength: 40,
 
   // Links the team uses in every test session. Environment values override these defaults.

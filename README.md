@@ -36,7 +36,7 @@ SESSION_LINK_1="Test environment | https://staging.example.com"   # optional, se
 SESSION_LINK_2="Test cases | https://docs.example.com/test-cases"  # optional
 ```
 
-`TEAM_OPTIONS` lists the teams on the join form, in that order (default: all four). The database accepts AF, CYD, PB and UI/UX only. If you set it, keep **UI/UX** in it: without it nobody can join as UI/UX, and the Visual Regression tasks stay open after every spin. That matters if your GitHub repository variable still says `AF,CYD,PB`.
+`TEAM_OPTIONS` lists the teams on the join form, in that order (default: all four). The database accepts AF, CYD, PB and UI/UX only. UI/UX is appended automatically when an older configuration omits it, because the Visual Regression tasks require UI/UX participants.
 
 Then run `node scripts/build-env.mjs` (Node 20.12+) to generate `env.js`, which `config.js` reads. Re-run it after every `.env` change. `.env` and `env.js` are git-ignored; for GitHub Pages, set the same names as repository **variables** (the deploy workflow generates `env.js`).
 
